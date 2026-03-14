@@ -6,6 +6,10 @@ import random
 import math
 from ctypes import wintypes
 
+# --- Ctypes structure for global mouse tracking ---
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
 # --- Global Configuration ---
 FPS = 60
 TRANSPARENT_KEY = (1, 1, 1) 
@@ -30,29 +34,240 @@ def get_dynamic_floor():
     return rect.bottom
 
 # --- Fallback Generators ---
-def create_fallback_icon(name):
+def create_fallback_icon(name, font_path=None):
     surf = pygame.Surface((28, 28), pygame.SRCALPHA)
     pygame.draw.circle(surf, (200, 200, 200), (14, 14), 14)
     pygame.draw.circle(surf, (50, 50, 50), (14, 14), 14, 2)
-    font = pygame.font.SysFont(None, 18, bold=True)
+    
+    try:
+        if font_path:
+            font = pygame.font.Font(font_path, 18)
+        else:
+            font = pygame.font.SysFont(None, 18, bold=True)
+    except:
+        font = pygame.font.SysFont(None, 18, bold=True)
+        
     text = font.render(name[0].upper(), True, (0, 0, 0))
     surf.blit(text, text.get_rect(center=(14, 14)))
     return surf
 
-# --- Updated: Pause Menu Class ---
+def create_fallback_pause_menu_png():
+    surf = pygame.Surface((1000, 700), pygame.SRCALPHA)
+    pygame.draw.rect(surf, (30, 30, 40), surf.get_rect(), border_radius=30)
+    return surf
+
+def create_fallback_backpack_png():
+    surf = pygame.Surface((240, 260), pygame.SRCALPHA)
+    pygame.draw.rect(surf, (139, 69, 19, 255), (0, 15, 240, 245), border_radius=20)
+    pygame.draw.rect(surf, (80, 40, 10, 255), (0, 15, 240, 245), 4, border_radius=20)
+    pygame.draw.rect(surf, (100, 50, 15, 255), (90, 0, 60, 20), border_radius=10)
+    pygame.draw.rect(surf, (80, 40, 10, 255), (90, 0, 60, 20), 4, border_radius=10)
+    return surf
+
+def create_fallback_cursor_png():
+    surf = pygame.Surface((12, 16), pygame.SRCALPHA)
+    pts = [(0, 0), (0, 12), (3, 9), (6, 15), (8, 14), (5, 8), (10, 8)]
+    pygame.draw.polygon(surf, (255, 255, 255), pts)
+    pygame.draw.polygon(surf, (0, 0, 0), pts, 1)
+    return surf
+
+def create_fallback_selecting_png():
+    surf = pygame.Surface((14, 14), pygame.SRCALPHA)
+    pts = [(1, 1), (13, 1), (7, 13)]
+    pygame.draw.polygon(surf, (255, 215, 0), pts)
+    pygame.draw.polygon(surf, (0, 0, 0), pts, 2)
+    return surf
+
+# --- Custom Cursor Class ---
+class CustomCursor:
+    def __init__(self, assets):
+        self.cursor_img = assets['cursor']
+        self.selecting_img = assets['selecting']
+        
+        pt = POINT()
+        ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+        self.x, self.y = pt.x, pt.y
+        self.last_mouse_x = self.x
+        self.facing_left = False
+        
+        self.cursor_state = "normal" 
+        self.lerp_speed = 0.35 
+
+    def update(self, characters, is_paused, radial_menu, inventory_menu, pause_menu):
+        pt = POINT()
+        ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+        actual_mouse_x, actual_mouse_y = pt.x, pt.y
+        
+        dx = actual_mouse_x - self.last_mouse_x
+        if dx < 0:
+            self.facing_left = True
+        elif dx > 0:
+            self.facing_left = False
+        self.last_mouse_x = actual_mouse_x
+
+        target_x = actual_mouse_x
+        target_y = actual_mouse_y
+        self.cursor_state = "normal"
+
+        # Game Logic: Get the CUSTOM cursor's position for physical interactions
+        current_pos = (self.x, self.y)
+
+        if is_paused:
+            # Physical custom cursor touches a pause menu button
+            if pause_menu.is_hovering(current_pos):
+                self.cursor_state = "hover_ui"
+        else:
+            # Magnetic lock-on uses physical mouse intention
+            hovered_icon_pos = radial_menu.get_hovered_icon_center((actual_mouse_x, actual_mouse_y))
+            
+            hovered_npc = None
+            if not hovered_icon_pos:
+                for char in characters:
+                    if char.rect.collidepoint((actual_mouse_x, actual_mouse_y)):
+                        hovered_npc = char
+                        break
+
+            if hovered_icon_pos:
+                target_x, target_y = hovered_icon_pos
+                self.cursor_state = "locked"
+            elif hovered_npc:
+                target_x = hovered_npc.rect.centerx
+                target_y = hovered_npc.rect.top - 20
+                self.cursor_state = "locked"
+            
+            # Inventory UI hover uses custom cursor physical presence
+            elif inventory_menu.is_hovering(current_pos):
+                self.cursor_state = "hover_ui"
+
+        self.x += (target_x - self.x) * self.lerp_speed
+        self.y += (target_y - self.y) * self.lerp_speed
+
+    def draw(self, surface):
+        img_to_draw = self.cursor_img
+        
+        if self.cursor_state == "locked":
+            img_to_draw = self.selecting_img
+        elif self.cursor_state == "hover_ui":
+            # --- FIXED: Rotates -135 degrees when hovering UI ---
+            img_to_draw = pygame.transform.rotate(self.selecting_img, -135)
+        elif self.facing_left:
+            img_to_draw = pygame.transform.flip(img_to_draw, True, False)
+            
+        draw_rect = img_to_draw.get_rect()
+        
+        # --- FIXED: Completely centers the image on the active coordinate ---
+        draw_rect.center = (self.x, self.y)
+            
+        surface.blit(img_to_draw, draw_rect)
+
+# --- Inventory Menu Class ---
+class InventoryMenu:
+    def __init__(self, assets):
+        self.bg_sprite = assets['backpack']
+        self.rect = self.bg_sprite.get_rect()
+        self.active_npc = None
+        
+        self.cols = 4
+        self.rows = 4
+        self.slot_size = 32 
+        
+        self.padding_x = 9
+        self.padding_y = 10
+        
+        self.grid_offset_x = 1
+        self.grid_offset_y = -7
+
+    def open_for(self, npc):
+        self.active_npc = npc
+        npc.menu_open = True
+        self.rect.midbottom = (self.active_npc.x, self.active_npc.y - 60)
+
+    def close(self):
+        if self.active_npc:
+            self.active_npc.menu_open = False
+            self.active_npc = None
+
+    def handle_click(self, mouse_pos):
+        if not self.active_npc:
+            return False
+        return True
+
+    def is_hovering(self, mouse_pos):
+        if not self.active_npc:
+            return False
+            
+        grid_w = (self.cols * self.slot_size) + ((self.cols - 1) * self.padding_x)
+        grid_h = (self.rows * self.slot_size) + ((self.rows - 1) * self.padding_y)
+        
+        start_x = self.rect.x + (self.rect.width - grid_w) // 2 + self.grid_offset_x
+        body_y_offset = 15 
+        body_height = self.rect.height - body_y_offset
+        start_y = self.rect.y + body_y_offset + (body_height - grid_h) // 2 + self.grid_offset_y
+        
+        for r in range(self.rows):
+            for c in range(self.cols):
+                sx = start_x + c * (self.slot_size + self.padding_x)
+                sy = start_y + r * (self.slot_size + self.padding_y)
+                slot_rect = pygame.Rect(sx, sy, self.slot_size, self.slot_size)
+                
+                if slot_rect.collidepoint(mouse_pos):
+                    return True
+        return False
+
+    def draw(self, surface, mouse_pos):
+        if not self.active_npc:
+            return
+            
+        self.rect.midbottom = (self.active_npc.x, self.active_npc.y - 60)
+            
+        surface.blit(self.bg_sprite, self.rect.topleft)
+        mx, my = mouse_pos
+        
+        grid_w = (self.cols * self.slot_size) + ((self.cols - 1) * self.padding_x)
+        grid_h = (self.rows * self.slot_size) + ((self.rows - 1) * self.padding_y)
+        
+        start_x = self.rect.x + (self.rect.width - grid_w) // 2 + self.grid_offset_x
+        
+        body_y_offset = 15 
+        body_height = self.rect.height - body_y_offset
+        start_y = self.rect.y + body_y_offset + (body_height - grid_h) // 2 + self.grid_offset_y
+        
+        for r in range(self.rows):
+            for c in range(self.cols):
+                sx = start_x + c * (self.slot_size + self.padding_x)
+                sy = start_y + r * (self.slot_size + self.padding_y)
+                slot_rect = pygame.Rect(sx, sy, self.slot_size, self.slot_size)
+                
+                is_hovered = slot_rect.collidepoint((mx, my))
+                
+                slot_surf = pygame.Surface((self.slot_size, self.slot_size), pygame.SRCALPHA)
+                
+                bg_color = (40, 40, 50, 180) if not is_hovered else (80, 80, 90, 220)
+                pygame.draw.rect(slot_surf, bg_color, slot_surf.get_rect(), border_radius=3)
+                
+                border_color = (20, 20, 30, 255) if not is_hovered else (255, 215, 0, 255)
+                pygame.draw.rect(slot_surf, border_color, slot_surf.get_rect(), 2, border_radius=3)
+                
+                surface.blit(slot_surf, (sx, sy))
+
+# --- Pause Menu Class ---
 class PauseMenu:
     def __init__(self, screen_w, screen_h, assets):
         self.screen_w = screen_w
         self.screen_h = screen_h
-        # use technique background of pause menu the pausemenu.png image
         self.menu_sprite = assets['pausemenu']
         
-        # Determine center based on loaded/generated image size
         self.rect = self.menu_sprite.get_rect()
         self.rect.center = (screen_w // 2, screen_h // 2)
         
-        # font_title removed as requested to remove paused text
-        self.font_opt = pygame.font.SysFont("Courier New", 32, bold=True)
+        font_path = assets.get('font_path')
+        try:
+            if font_path:
+                self.font_opt = pygame.font.Font(font_path, 40)
+            else:
+                self.font_opt = pygame.font.SysFont("Courier New", 40, bold=True)
+        except:
+            self.font_opt = pygame.font.SysFont("Courier New", 40, bold=True)
         
         self.options = [
             "Placeholder 1", 
@@ -61,52 +276,37 @@ class PauseMenu:
             "Quit Game"
         ]
 
+    def is_hovering(self, mouse_pos):
+        start_y = self.rect.bottom - 320 
+        for i, opt in enumerate(self.options):
+            opt_rect = pygame.Rect(self.rect.centerx - 200, start_y + (i * 45), 400, 40)
+            if opt_rect.collidepoint(mouse_pos):
+                return True
+        return False
+
     def handle_click(self, mouse_pos):
-        # Adjusted Y starting position as text moved up, adjusted for new bigger image size
-        start_y = self.rect.y + 100 # Moved up from 180 since title is gone
+        start_y = self.rect.bottom - 320 
         
         for i, opt in enumerate(self.options):
-            # invisible rectangle hitbox updated for new size/position
-            opt_rect = pygame.Rect(self.rect.x, start_y + (i * 70), self.rect.width, 50)
+            opt_rect = pygame.Rect(self.rect.centerx - 200, start_y + (i * 45), 400, 40)
             if opt_rect.collidepoint(mouse_pos):
                 return opt
         return None
 
-    def draw(self, surface):
-        # use technique to make the background behind the menu darker
-        # Full-screen dimming overlay (alpha=180 technique)
-        full_screen_dim = pygame.Surface((self.screen_w, self.screen_h), pygame.SRCALPHA)
-        pygame.draw.rect(full_screen_dim, (10, 10, 15, 180), full_screen_dim.get_rect())
-        surface.blit(full_screen_dim, (0, 0))
-        
-        # 1. Draw Pause Menu Background (Loaded PNG image)
-        # image bigger technique handled via asset loading/fallback generation
+    def draw(self, surface, mouse_pos):
         surface.blit(self.menu_sprite, self.rect.topleft)
         
-        # --- REQUEST REMOVE BORDER ---
-        # The gray border is removed by commenting out this line: technique
-        # pygame.draw.rect(surface, (100, 100, 120, 255), self.rect, 6, border_radius=30)
-        
-        # 2. Draw Title
-        # --- REQUEST REMOVE PAUSED TEXT ---
-        # Paused text blit removed technique
-        # title_surf = self.font_title.render("PAUSED", True, (255, 255, 255))
-        # surface.blit(title_surf, title_surf.get_rect(center=(self.rect.centerx, self.rect.y + 90)))
-        
-        # 3. Draw Interactive Text Options
-        mx, my = pygame.mouse.get_pos()
-        start_y = self.rect.y + 100 # Position shifted up due to removed title technique
+        mx, my = mouse_pos
+        start_y = self.rect.bottom - 320 
         
         for i, opt in enumerate(self.options):
-            # invisible rectangle hitbox, slightly larger spacing for bigger menu
-            opt_rect = pygame.Rect(self.rect.x, start_y + (i * 70), self.rect.width, 50)
+            opt_rect = pygame.Rect(self.rect.centerx - 200, start_y + (i * 45), 400, 40)
             is_hovered = opt_rect.collidepoint((mx, my))
             
-            # Hover color logic
             if opt == "Quit Game":
                 color = (255, 100, 100) if is_hovered else (200, 60, 60)
             else:
-                color = (255, 215, 0) if is_hovered else (200, 200, 200) # Gold if hovered, else gray
+                color = (255, 215, 0) if is_hovered else (255, 255, 255) 
                 
             text_surf = self.font_opt.render(opt, True, color)
             surface.blit(text_surf, text_surf.get_rect(center=opt_rect.center))
@@ -142,11 +342,11 @@ class RadialMenu:
     def get_center(self):
         if not self.active_npc: 
             return (0, 0)
-        return (self.active_npc.x, self.active_npc.taskbar_y - 25)
+        return (self.active_npc.x, self.active_npc.y - 25)
 
-    def handle_click(self, mouse_pos):
+    def get_hovered_icon_center(self, mouse_pos):
         if not self.active_npc:
-            return False
+            return None
             
         cx, cy = self.get_center()
         mx, my = mouse_pos
@@ -161,19 +361,39 @@ class RadialMenu:
                 
             for name, start_ang, end_ang in self.wedges:
                 if start_ang <= angle <= end_ang:
-                    if name == "exit":
-                        self.close()
-                    else:
-                        print(f"Clicked {name} - Feature not yet implemented!")
-                    return True 
-        return False
+                    mid_ang = (start_ang + end_ang) / 2
+                    icon_dist = self.radius * 0.65
+                    ix = cx + math.cos(mid_ang) * icon_dist
+                    iy = cy + math.sin(mid_ang) * icon_dist
+                    return (ix, iy)
+        return None
 
-    def draw(self, surface):
+    def handle_click(self, mouse_pos):
+        if not self.active_npc:
+            return None
+            
+        cx, cy = self.get_center()
+        mx, my = mouse_pos
+        dx = mx - cx
+        dy = my - cy
+        dist = math.hypot(dx, dy)
+        
+        if dist <= self.radius:
+            angle = math.atan2(dy, dx)
+            if angle == math.pi: 
+                angle = -math.pi
+                
+            for name, start_ang, end_ang in self.wedges:
+                if start_ang <= angle <= end_ang:
+                    return name
+        return None
+
+    def draw(self, surface, mouse_pos):
         if not self.active_npc:
             return
             
         cx, cy = self.get_center()
-        mx, my = pygame.mouse.get_pos()
+        mx, my = mouse_pos
         dx = mx - cx
         dy = my - cy
         dist = math.hypot(dx, dy)
@@ -220,6 +440,9 @@ class Person:
         self.base_sprite = pygame.transform.scale(sprite, (new_width, TARGET_HEIGHT))
         
         self.x = start_x
+        self.y = self.taskbar_y
+        self.vy = 0
+        
         self.vx = 0
         self.state = "idle" 
         self.state_timer = random.randint(60, 180)
@@ -227,13 +450,39 @@ class Person:
         self.walk_speed = random.uniform(0.5, 1.5)
         
         self.menu_open = False
-        self.rect = self.base_sprite.get_rect(midbottom=(self.x, self.taskbar_y))
+        self.is_dragged = False 
+        self.rect = self.base_sprite.get_rect(midbottom=(self.x, self.y))
+        
+        self.anim_tick = 0
+        self.angle = 0
 
     def update(self, current_floor):
+        if self.is_dragged:
+            self.angle = math.sin(pygame.time.get_ticks() * 0.03) * 15
+            return 
+            
+        if self.y < current_floor or self.state == "falling":
+            self.state = "falling"
+            self.vy += 0.8  
+            self.y += self.vy
+            self.angle += 20  
+            
+            if self.y >= current_floor:
+                self.y = current_floor
+                self.state = "idle"
+                self.vy = 0
+                self.angle = 0
+                self.state_timer = 60 
+                
+            self.rect.midbottom = (self.x, self.y)
+            return
+
         self.taskbar_y = current_floor
-        self.rect.midbottom = (self.x, self.taskbar_y)
+        self.y = current_floor
+        self.rect.midbottom = (self.x, self.y)
 
         if self.menu_open:
+            self.angle = 0 
             return
 
         self.state_timer -= 1
@@ -251,6 +500,9 @@ class Person:
             self.x += self.vx
             self.facing_left = self.vx < 0
             
+            self.anim_tick += 1
+            self.angle = math.sin(self.anim_tick * 0.16) * 10
+            
             if self.x < 30:
                 self.x = 30
                 self.vx *= -1
@@ -259,20 +511,14 @@ class Person:
                 self.x = self.screen_w - 30
                 self.vx *= -1
                 self.facing_left = True
+        else:
+            self.angle = 0
 
     def draw(self, surface):
         img = pygame.transform.flip(self.base_sprite, self.facing_left, False)
-        
-        angle = 0
-        if self.state == "walk" and not self.menu_open:
-            time_ms = pygame.time.get_ticks()
-            angle = math.sin(time_ms * 0.01) * 10 
-            
-        img = pygame.transform.rotate(img, angle)
-        
+        img = pygame.transform.rotate(img, self.angle)
         draw_rect = img.get_rect()
-        draw_rect.midbottom = (self.x, self.taskbar_y)
-        
+        draw_rect.midbottom = (self.x, self.y) 
         surface.blit(img, draw_rect)
 
 class Splash:
@@ -480,24 +726,17 @@ def setup_transparent_fullscreen():
     
     return screen, screen_w, screen_h
 
-# --- Generates Fallback PNG with UPDATED LARGER SIZE ---
-def create_fallback_pause_menu_png():
-    """Generates a dynamic 1000x700 surface to serve as the pausemenu.png sprite."""
-    # use szeem to have made a semi transparent black background for the menu technique used in draw, image biggger technique
-    # image bigger technique: Size increased to 1000x700
-    surf = pygame.Surface((1000, 700), pygame.SRCALPHA)
-    
-    # Procedural background details for the image itself
-    pygame.draw.rect(surf, (30, 30, 40), surf.get_rect(), border_radius=30)
-    # Inner border texture
-    pygame.draw.rect(surf, (60, 60, 80), surf.get_rect().inflate(-20,-20), 4, border_radius=25)
-    
-    return surf
-
 def load_assets():
     asset_dir = os.path.join(os.path.dirname(__file__), "assets")
-    assets = {'sprites': {}}
+    assets = {}
     
+    custom_font_path = os.path.join(asset_dir, "PixelDart.ttf")
+    if os.path.exists(custom_font_path):
+        assets['font_path'] = custom_font_path
+    else:
+        assets['font_path'] = None
+    
+    assets['sprites'] = {}
     try:
         assets['sprites'][WEATHER_CLOUDY] = pygame.image.load(os.path.join(asset_dir, "cloudy.png")).convert_alpha()
         assets['sprites'][WEATHER_RAIN] = pygame.image.load(os.path.join(asset_dir, "rain.png")).convert_alpha()
@@ -515,15 +754,30 @@ def load_assets():
             img = pygame.image.load(os.path.join(asset_dir, f"{icon_name}.png")).convert_alpha()
             assets[icon_name] = pygame.transform.scale(img, (28, 28))
         except pygame.error:
-            assets[icon_name] = create_fallback_icon(icon_name)
+            assets[icon_name] = create_fallback_icon(icon_name, assets['font_path'])
             
-    # --- Load Pause Menu PNG ---
     try:
-        # use technique background of pause menu the pausemenu.png image
         assets['pausemenu'] = pygame.image.load(os.path.join(asset_dir, "pausemenu.png")).convert_alpha()
     except pygame.error:
-        # Generate larger fallback
         assets['pausemenu'] = create_fallback_pause_menu_png()
+        
+    try:
+        bag_img = pygame.image.load(os.path.join(asset_dir, "backpack.png")).convert_alpha()
+        assets['backpack'] = pygame.transform.scale(bag_img, (240, 260))
+    except pygame.error:
+        assets['backpack'] = create_fallback_backpack_png()
+
+    try:
+        cur_img = pygame.image.load(os.path.join(asset_dir, "cursor.png")).convert_alpha()
+        assets['cursor'] = pygame.transform.scale(cur_img, (60, 60))
+    except pygame.error:
+        assets['cursor'] = pygame.transform.scale(create_fallback_cursor_png(), (60, 60))
+        
+    try:
+        sel_img = pygame.image.load(os.path.join(asset_dir, "selecting.png")).convert_alpha()
+        assets['selecting'] = pygame.transform.scale(sel_img, (60, 60))
+    except pygame.error:
+        assets['selecting'] = pygame.transform.scale(create_fallback_selecting_png(), (60, 60))
 
     return assets
 
@@ -533,17 +787,35 @@ def main():
     screen, screen_w, screen_h = setup_transparent_fullscreen()
     clock = pygame.time.Clock()
     
+    pygame.mouse.set_visible(False)
+    
     pygame.font.init()
-    debug_font = pygame.font.SysFont("Courier New", 18, bold=True)
-    debug_mode = False
-    game_paused = False 
     
     assets = load_assets()
     sprites = assets['sprites']
     
-    # Initialize UI
+    font_path = assets.get('font_path')
+    try:
+        if font_path:
+            debug_font = pygame.font.Font(font_path, 18)
+        else:
+            debug_font = pygame.font.SysFont("Courier New", 18, bold=True)
+    except:
+        debug_font = pygame.font.SysFont("Courier New", 18, bold=True)
+        
+    debug_mode = False
+    game_paused = False 
+    
+    dragging_npc = None
+    drag_offset_x = 0
+    drag_offset_y = 0
+    drag_start_pos = (0, 0)
+    
     radial_menu = RadialMenu(assets)
     pause_menu = PauseMenu(screen_w, screen_h, assets)
+    inventory_menu = InventoryMenu(assets) 
+    
+    custom_cursor = CustomCursor(assets)
     
     adam = Person("Adam", assets['adam'], screen_w, screen_w // 3)
     eve = Person("Eve", assets['eve'], screen_w, (screen_w // 3) * 2)
@@ -570,6 +842,9 @@ def main():
     while running:
         current_floor = get_dynamic_floor()
         
+        # --- FIXED: Use the CUSTOM cursor for physical game logic! ---
+        custom_mouse_pos = (int(custom_cursor.x), int(custom_cursor.y))
+        
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -582,45 +857,82 @@ def main():
                         game_paused = not game_paused 
                 elif event.key == pygame.K_F4:
                     debug_mode = not debug_mode
+            
+            if event.type == pygame.MOUSEMOTION:
+                if dragging_npc:
+                    dragging_npc.x = custom_mouse_pos[0] + drag_offset_x
+                    dragging_npc.y = custom_mouse_pos[1] + drag_offset_y
+                    dragging_npc.rect.midbottom = (dragging_npc.x, dragging_npc.y)
+                
+            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                if dragging_npc:
+                    dist = math.hypot(custom_mouse_pos[0] - drag_start_pos[0], custom_mouse_pos[1] - drag_start_pos[1])
+                    if dist < 5:
+                        radial_menu.open_for(dragging_npc)
+                    else:
+                        dragging_npc.state = "falling"
+                        dragging_npc.vy = 0 
+                    dragging_npc.is_dragged = False
+                    dragging_npc = None
                 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                mouse_pos = pygame.mouse.get_pos()
-                
-                # PAUSE MENU CLICK LOGIC
                 if game_paused:
-                    action = pause_menu.handle_click(mouse_pos)
+                    action = pause_menu.handle_click(custom_mouse_pos)
                     if action == "Quit Game":
                         running = False
                     elif action:
                         print(f"Pause Menu Clicked: {action}")
-                    continue # Skip checking in-game objects if we are paused!
+                    continue 
                 
-                # Priority 1: Did we click inside an open Radial Menu?
-                if radial_menu.handle_click(mouse_pos):
-                    continue
+                if inventory_menu.active_npc:
+                    if inventory_menu.rect.collidepoint(custom_mouse_pos):
+                        inventory_menu.handle_click(custom_mouse_pos)
+                        continue 
+                    else:
+                        inventory_menu.close()
                 
-                # Priority 2: Did we click an NPC?
+                if radial_menu.active_npc:
+                    action = radial_menu.handle_click(custom_mouse_pos)
+                    if action:
+                        if action == "exit":
+                            radial_menu.close()
+                        elif action == "inventory":
+                            npc = radial_menu.active_npc
+                            radial_menu.close()
+                            inventory_menu.open_for(npc)
+                        else:
+                            print(f"Clicked {action} - Feature not yet implemented!")
+                        continue
+                
                 clicked_npc = None
                 for char in characters:
-                    if char.rect.collidepoint(mouse_pos):
+                    # Inflate hitbox upwards so we can click the locked cursor above their head!
+                    click_rect = char.rect.copy()
+                    click_rect.y -= 40
+                    click_rect.height += 40
+                    if click_rect.collidepoint(custom_mouse_pos):
                         clicked_npc = char
                         break
                         
                 if clicked_npc:
-                    if radial_menu.active_npc != clicked_npc:
-                        radial_menu.close()
-                        radial_menu.open_for(clicked_npc)
+                    dragging_npc = clicked_npc
+                    dragging_npc.is_dragged = True
+                    drag_start_pos = custom_mouse_pos
+                    drag_offset_x = dragging_npc.x - custom_mouse_pos[0]
+                    drag_offset_y = dragging_npc.y - custom_mouse_pos[1] 
+                    radial_menu.close()
+                    inventory_menu.close()
                     continue
                 
-                # Priority 3: Did we click a Cloud?
                 for cloud in clouds:
-                    if cloud.handle_click(mouse_pos):
+                    if cloud.handle_click(custom_mouse_pos):
                         water_depletion += FPS * 5 
                         if water_depletion > MAX_DEPLETION:
                             water_depletion = MAX_DEPLETION
                         break
 
-        # --- ONLY UPDATE THE WORLD IF UNPAUSED ---
+        custom_cursor.update(characters, game_paused, radial_menu, inventory_menu, pause_menu)
+
         if not game_paused:
             if water_depletion > 0:
                 water_depletion -= 0.5 
@@ -682,7 +994,6 @@ def main():
             for char in characters:
                 char.update(current_floor)
 
-        # --- Render Logic ---
         screen.fill(TRANSPARENT_KEY)
         
         for drop in raindrops:
@@ -694,14 +1005,14 @@ def main():
         for char in characters:
             char.draw(screen)
             
+        # UI draw methods now receive the custom cursor coordinates
         if not game_paused:
-            radial_menu.draw(screen)
+            radial_menu.draw(screen, custom_mouse_pos)
+            inventory_menu.draw(screen, custom_mouse_pos) 
             
-        # --- Draw Pause Menu (Draws dynamically!) ---
         if game_paused:
-            pause_menu.draw(screen)
+            pause_menu.draw(screen, custom_mouse_pos)
             
-        # --- Draw Debug Menu ---
         if debug_mode:
             debug_info = [
                 f"=== DEBUG MODE ===",
@@ -720,6 +1031,8 @@ def main():
                 pygame.draw.rect(screen, (0, 0, 0), bg_rect) 
                 screen.blit(text_surf, (10, y_offset))
                 y_offset += 22
+                
+        custom_cursor.draw(screen)
         
         pygame.display.flip()
         clock.tick(FPS)
