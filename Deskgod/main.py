@@ -29,13 +29,191 @@ def get_dynamic_floor():
     ctypes.windll.user32.SystemParametersInfoW(48, 0, ctypes.byref(rect), 0) 
     return rect.bottom
 
+# --- Fallback Generators ---
+def create_fallback_icon(name):
+    surf = pygame.Surface((28, 28), pygame.SRCALPHA)
+    pygame.draw.circle(surf, (200, 200, 200), (14, 14), 14)
+    pygame.draw.circle(surf, (50, 50, 50), (14, 14), 14, 2)
+    font = pygame.font.SysFont(None, 18, bold=True)
+    text = font.render(name[0].upper(), True, (0, 0, 0))
+    surf.blit(text, text.get_rect(center=(14, 14)))
+    return surf
+
+# --- Updated: Pause Menu Class ---
+class PauseMenu:
+    def __init__(self, screen_w, screen_h, assets):
+        self.screen_w = screen_w
+        self.screen_h = screen_h
+        # use technique background of pause menu the pausemenu.png image
+        self.menu_sprite = assets['pausemenu']
+        
+        # Determine center based on loaded/generated image size
+        self.rect = self.menu_sprite.get_rect()
+        self.rect.center = (screen_w // 2, screen_h // 2)
+        
+        # font_title removed as requested to remove paused text
+        self.font_opt = pygame.font.SysFont("Courier New", 32, bold=True)
+        
+        self.options = [
+            "Placeholder 1", 
+            "Placeholder 2", 
+            "Placeholder 3", 
+            "Quit Game"
+        ]
+
+    def handle_click(self, mouse_pos):
+        # Adjusted Y starting position as text moved up, adjusted for new bigger image size
+        start_y = self.rect.y + 100 # Moved up from 180 since title is gone
+        
+        for i, opt in enumerate(self.options):
+            # invisible rectangle hitbox updated for new size/position
+            opt_rect = pygame.Rect(self.rect.x, start_y + (i * 70), self.rect.width, 50)
+            if opt_rect.collidepoint(mouse_pos):
+                return opt
+        return None
+
+    def draw(self, surface):
+        # use technique to make the background behind the menu darker
+        # Full-screen dimming overlay (alpha=180 technique)
+        full_screen_dim = pygame.Surface((self.screen_w, self.screen_h), pygame.SRCALPHA)
+        pygame.draw.rect(full_screen_dim, (10, 10, 15, 180), full_screen_dim.get_rect())
+        surface.blit(full_screen_dim, (0, 0))
+        
+        # 1. Draw Pause Menu Background (Loaded PNG image)
+        # image bigger technique handled via asset loading/fallback generation
+        surface.blit(self.menu_sprite, self.rect.topleft)
+        
+        # --- REQUEST REMOVE BORDER ---
+        # The gray border is removed by commenting out this line: technique
+        # pygame.draw.rect(surface, (100, 100, 120, 255), self.rect, 6, border_radius=30)
+        
+        # 2. Draw Title
+        # --- REQUEST REMOVE PAUSED TEXT ---
+        # Paused text blit removed technique
+        # title_surf = self.font_title.render("PAUSED", True, (255, 255, 255))
+        # surface.blit(title_surf, title_surf.get_rect(center=(self.rect.centerx, self.rect.y + 90)))
+        
+        # 3. Draw Interactive Text Options
+        mx, my = pygame.mouse.get_pos()
+        start_y = self.rect.y + 100 # Position shifted up due to removed title technique
+        
+        for i, opt in enumerate(self.options):
+            # invisible rectangle hitbox, slightly larger spacing for bigger menu
+            opt_rect = pygame.Rect(self.rect.x, start_y + (i * 70), self.rect.width, 50)
+            is_hovered = opt_rect.collidepoint((mx, my))
+            
+            # Hover color logic
+            if opt == "Quit Game":
+                color = (255, 100, 100) if is_hovered else (200, 60, 60)
+            else:
+                color = (255, 215, 0) if is_hovered else (200, 200, 200) # Gold if hovered, else gray
+                
+            text_surf = self.font_opt.render(opt, True, color)
+            surface.blit(text_surf, text_surf.get_rect(center=opt_rect.center))
+
+# --- Radial Menu Class ---
+class RadialMenu:
+    def __init__(self, assets):
+        self.radius = 75
+        self.active_npc = None
+        self.icons = {
+            "move": assets['move'],
+            "inventory": assets['inventory'],
+            "build": assets['build'],
+            "exit": assets['exit']
+        }
+        
+        self.wedges = [
+            ("move", -math.pi, -3*math.pi/4),
+            ("inventory", -3*math.pi/4, -math.pi/2),
+            ("build", -math.pi/2, -math.pi/4),
+            ("exit", -math.pi/4, 0)
+        ]
+
+    def open_for(self, npc):
+        self.active_npc = npc
+        npc.menu_open = True
+
+    def close(self):
+        if self.active_npc:
+            self.active_npc.menu_open = False
+            self.active_npc = None
+
+    def get_center(self):
+        if not self.active_npc: 
+            return (0, 0)
+        return (self.active_npc.x, self.active_npc.taskbar_y - 25)
+
+    def handle_click(self, mouse_pos):
+        if not self.active_npc:
+            return False
+            
+        cx, cy = self.get_center()
+        mx, my = mouse_pos
+        dx = mx - cx
+        dy = my - cy
+        dist = math.hypot(dx, dy)
+        
+        if dist <= self.radius:
+            angle = math.atan2(dy, dx)
+            if angle == math.pi: 
+                angle = -math.pi
+                
+            for name, start_ang, end_ang in self.wedges:
+                if start_ang <= angle <= end_ang:
+                    if name == "exit":
+                        self.close()
+                    else:
+                        print(f"Clicked {name} - Feature not yet implemented!")
+                    return True 
+        return False
+
+    def draw(self, surface):
+        if not self.active_npc:
+            return
+            
+        cx, cy = self.get_center()
+        mx, my = pygame.mouse.get_pos()
+        dx = mx - cx
+        dy = my - cy
+        dist = math.hypot(dx, dy)
+        
+        hovered_name = None
+        if dist <= self.radius:
+            angle = math.atan2(dy, dx)
+            if angle == math.pi: 
+                angle = -math.pi
+            for name, start_ang, end_ang in self.wedges:
+                if start_ang <= angle <= end_ang:
+                    hovered_name = name
+                    break
+
+        temp_surf = pygame.Surface((self.radius * 2, self.radius * 2), pygame.SRCALPHA)
+        
+        for name, start_ang, end_ang in self.wedges:
+            mid_ang = (start_ang + end_ang) / 2
+            icon_dist = self.radius * 0.65
+            ix = self.radius + math.cos(mid_ang) * icon_dist
+            iy = self.radius + math.sin(mid_ang) * icon_dist
+            
+            icon_img = self.icons[name]
+            
+            if name == hovered_name:
+                new_w = int(icon_img.get_width() * 1.5)
+                new_h = int(icon_img.get_height() * 1.5)
+                icon_img = pygame.transform.scale(icon_img, (new_w, new_h))
+                
+            icon_rect = icon_img.get_rect(center=(ix, iy))
+            temp_surf.blit(icon_img, icon_rect)
+
+        surface.blit(temp_surf, (cx - self.radius, cy - self.radius))
+
 class Person:
     def __init__(self, name, sprite, screen_w, start_x):
         self.name = name
         self.screen_w = screen_w
         self.taskbar_y = get_dynamic_floor() 
         
-        # Using standard scale to prevent black edge blending
         TARGET_HEIGHT = 50
         scale_ratio = TARGET_HEIGHT / sprite.get_height()
         new_width = max(1, int(sprite.get_width() * scale_ratio))
@@ -45,12 +223,18 @@ class Person:
         self.vx = 0
         self.state = "idle" 
         self.state_timer = random.randint(60, 180)
-        
         self.facing_left = False
         self.walk_speed = random.uniform(0.5, 1.5)
+        
+        self.menu_open = False
+        self.rect = self.base_sprite.get_rect(midbottom=(self.x, self.taskbar_y))
 
     def update(self, current_floor):
         self.taskbar_y = current_floor
+        self.rect.midbottom = (self.x, self.taskbar_y)
+
+        if self.menu_open:
+            return
 
         self.state_timer -= 1
         if self.state_timer <= 0:
@@ -80,16 +264,16 @@ class Person:
         img = pygame.transform.flip(self.base_sprite, self.facing_left, False)
         
         angle = 0
-        if self.state == "walk":
+        if self.state == "walk" and not self.menu_open:
             time_ms = pygame.time.get_ticks()
             angle = math.sin(time_ms * 0.01) * 10 
             
         img = pygame.transform.rotate(img, angle)
         
-        rect = img.get_rect()
-        rect.midbottom = (self.x, self.taskbar_y)
+        draw_rect = img.get_rect()
+        draw_rect.midbottom = (self.x, self.taskbar_y)
         
-        surface.blit(img, rect)
+        surface.blit(img, draw_rect)
 
 class Splash:
     def __init__(self, x, y, weather_type):
@@ -157,6 +341,7 @@ class Cloud:
         self.old_image = None
         self.new_image = None
         self.transition_alpha = 0
+        self.pop_timer = 0
         
         self.respawn(existing_clouds or [], current_weather, start_offscreen=False)
 
@@ -174,11 +359,19 @@ class Cloud:
         self.new_image = pygame.transform.scale(base_sprite, (new_w, new_h))
         self.weather = target_weather
 
+    def handle_click(self, mouse_pos):
+        if self.rect.collidepoint(mouse_pos) and self.weather == WEATHER_CLOUDY and self.pop_timer == 0:
+            self.set_weather(WEATHER_RAIN) 
+            self.pop_timer = 105  
+            return True
+        return False
+
     def respawn(self, existing_clouds, global_weather, start_offscreen=True):
         self.scale = random.uniform(0.3, 0.5)
         self.speed = random.uniform(0.8, 1.2)
         self.weather = global_weather
         self.is_transitioning = False 
+        self.pop_timer = 0
         
         base_sprite = self.sprites[self.weather]
         new_w = max(1, int(base_sprite.get_width() * self.scale))
@@ -188,8 +381,8 @@ class Cloud:
         test_rect = self.image.get_rect()
 
         for _ in range(20):
-            min_y = max(50, int(self.screen_h * 0.05))
-            max_y = max(min_y + 10, int(self.screen_h * 0.25))
+            min_y = max(10, int(self.screen_h * 0.01))
+            max_y = max(min_y + 10, int(self.screen_h * 0.12))
             test_rect.y = random.randint(min_y, max_y)
             
             if start_offscreen:
@@ -210,7 +403,13 @@ class Cloud:
 
     def update(self, existing_clouds, global_weather):
         self.rect.x += self.speed
-        if self.rect.x > self.screen_w:
+        
+        if self.pop_timer > 0:
+            self.pop_timer -= 1
+            if self.pop_timer == 0:
+                self.respawn(existing_clouds, global_weather, start_offscreen=True)
+                
+        elif self.rect.x > self.screen_w:
             self.respawn(existing_clouds, global_weather, start_offscreen=True)
             
         if self.is_transitioning:
@@ -224,14 +423,44 @@ class Cloud:
 
     def draw(self, surface):
         if self.is_transitioning:
-            surface.blit(self.old_image, self.rect)
-            surface.blit(self.new_image, self.rect)
+            temp_surf = pygame.Surface(self.rect.size, pygame.SRCALPHA)
+            if self.old_image: temp_surf.blit(self.old_image, (0, 0))
+            if self.new_image: temp_surf.blit(self.new_image, (0, 0))
+            img_to_draw = temp_surf
         else:
-            surface.blit(self.image, self.rect)
+            img_to_draw = self.image
+
+        draw_rect = self.rect.copy()
+
+        if self.pop_timer > 0:
+            if self.pop_timer > 90:
+                t = (105 - self.pop_timer) / 15.0
+                scale = 1.0 + math.sin(t * math.pi / 2.0) * 0.4 
+                alpha = 255
+            elif self.pop_timer > 30:
+                scale = 1.4
+                alpha = 255
+            else:
+                t = (30 - self.pop_timer) / 30.0
+                scale = 1.4 * (1.0 - t)
+                scale = max(0.01, scale) 
+                alpha = int(255 * (1.0 - t))
+
+            new_w = max(1, int(draw_rect.width * scale))
+            new_h = max(1, int(draw_rect.height * scale))
+            
+            img_to_draw = pygame.transform.scale(img_to_draw, (new_w, new_h))
+            
+            if alpha < 255:
+                img_to_draw = img_to_draw.copy()
+                img_to_draw.set_alpha(alpha)
+            
+            draw_rect = img_to_draw.get_rect(center=self.rect.center)
+
+        surface.blit(img_to_draw, draw_rect)
 
 def setup_transparent_fullscreen():
     screen_w = ctypes.windll.user32.GetSystemMetrics(0)
-    # Subtract exactly 1 pixel so Windows doesn't hide the taskbar
     screen_h = ctypes.windll.user32.GetSystemMetrics(1) - 1 
 
     os.environ['SDL_VIDEO_WINDOW_POS'] = "0,0"
@@ -239,7 +468,6 @@ def setup_transparent_fullscreen():
     
     hwnd = pygame.display.get_wm_info()['window']
     GWL_EXSTYLE = -20
-    # Removed WS_EX_TOOLWINDOW so the icon shows up on the taskbar
     WS_EX_LAYERED = 0x00080000
     LWA_COLORKEY = 1
     
@@ -252,6 +480,20 @@ def setup_transparent_fullscreen():
     
     return screen, screen_w, screen_h
 
+# --- Generates Fallback PNG with UPDATED LARGER SIZE ---
+def create_fallback_pause_menu_png():
+    """Generates a dynamic 1000x700 surface to serve as the pausemenu.png sprite."""
+    # use szeem to have made a semi transparent black background for the menu technique used in draw, image biggger technique
+    # image bigger technique: Size increased to 1000x700
+    surf = pygame.Surface((1000, 700), pygame.SRCALPHA)
+    
+    # Procedural background details for the image itself
+    pygame.draw.rect(surf, (30, 30, 40), surf.get_rect(), border_radius=30)
+    # Inner border texture
+    pygame.draw.rect(surf, (60, 60, 80), surf.get_rect().inflate(-20,-20), 4, border_radius=25)
+    
+    return surf
+
 def load_assets():
     asset_dir = os.path.join(os.path.dirname(__file__), "assets")
     assets = {'sprites': {}}
@@ -263,13 +505,27 @@ def load_assets():
         
         assets['adam'] = pygame.image.load(os.path.join(asset_dir, "adam.png")).convert_alpha()
         assets['eve'] = pygame.image.load(os.path.join(asset_dir, "eve.png")).convert_alpha()
-        
-        return assets
     except pygame.error as e:
-        print(f"FAILED TO LOAD ASSETS: {e}")
-        print("Ensure 'assets' folder contains: cloudy.png, rain.png, storm.png, adam.png, and eve.png")
+        print(f"FAILED TO LOAD BASE ASSETS: {e}")
         pygame.quit()
         sys.exit()
+
+    for icon_name in ["move", "inventory", "build", "exit"]:
+        try:
+            img = pygame.image.load(os.path.join(asset_dir, f"{icon_name}.png")).convert_alpha()
+            assets[icon_name] = pygame.transform.scale(img, (28, 28))
+        except pygame.error:
+            assets[icon_name] = create_fallback_icon(icon_name)
+            
+    # --- Load Pause Menu PNG ---
+    try:
+        # use technique background of pause menu the pausemenu.png image
+        assets['pausemenu'] = pygame.image.load(os.path.join(asset_dir, "pausemenu.png")).convert_alpha()
+    except pygame.error:
+        # Generate larger fallback
+        assets['pausemenu'] = create_fallback_pause_menu_png()
+
+    return assets
 
 def main():
     pygame.init()
@@ -277,8 +533,17 @@ def main():
     screen, screen_w, screen_h = setup_transparent_fullscreen()
     clock = pygame.time.Clock()
     
+    pygame.font.init()
+    debug_font = pygame.font.SysFont("Courier New", 18, bold=True)
+    debug_mode = False
+    game_paused = False 
+    
     assets = load_assets()
     sprites = assets['sprites']
+    
+    # Initialize UI
+    radial_menu = RadialMenu(assets)
+    pause_menu = PauseMenu(screen_w, screen_h, assets)
     
     adam = Person("Adam", assets['adam'], screen_w, screen_w // 3)
     eve = Person("Eve", assets['eve'], screen_w, (screen_w // 3) * 2)
@@ -287,6 +552,9 @@ def main():
     current_weather = WEATHER_CLOUDY
     weather_timer = 0
     WEATHER_CHANGE_TIME = FPS * 15 
+    
+    water_depletion = 0 
+    MAX_DEPLETION = FPS * 25 
     
     current_wind = 0.0
     target_wind = 0.0
@@ -305,55 +573,114 @@ def main():
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                running = False
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    mods = pygame.key.get_mods()
+                    if mods & pygame.KMOD_SHIFT: 
+                        running = False
+                    else:
+                        game_paused = not game_paused 
+                elif event.key == pygame.K_F4:
+                    debug_mode = not debug_mode
+                
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mouse_pos = pygame.mouse.get_pos()
+                
+                # PAUSE MENU CLICK LOGIC
+                if game_paused:
+                    action = pause_menu.handle_click(mouse_pos)
+                    if action == "Quit Game":
+                        running = False
+                    elif action:
+                        print(f"Pause Menu Clicked: {action}")
+                    continue # Skip checking in-game objects if we are paused!
+                
+                # Priority 1: Did we click inside an open Radial Menu?
+                if radial_menu.handle_click(mouse_pos):
+                    continue
+                
+                # Priority 2: Did we click an NPC?
+                clicked_npc = None
+                for char in characters:
+                    if char.rect.collidepoint(mouse_pos):
+                        clicked_npc = char
+                        break
+                        
+                if clicked_npc:
+                    if radial_menu.active_npc != clicked_npc:
+                        radial_menu.close()
+                        radial_menu.open_for(clicked_npc)
+                    continue
+                
+                # Priority 3: Did we click a Cloud?
+                for cloud in clouds:
+                    if cloud.handle_click(mouse_pos):
+                        water_depletion += FPS * 5 
+                        if water_depletion > MAX_DEPLETION:
+                            water_depletion = MAX_DEPLETION
+                        break
 
-        # --- Wind Logic ---
-        if random.random() < 0.02: 
-            if current_weather == WEATHER_STORM:
-                target_wind = random.uniform(-10.0, 10.0)
-            elif current_weather == WEATHER_RAIN:
-                target_wind = random.uniform(-3.0, 3.0)
+        # --- ONLY UPDATE THE WORLD IF UNPAUSED ---
+        if not game_paused:
+            if water_depletion > 0:
+                water_depletion -= 0.5 
+
+            if random.random() < 0.02: 
+                if current_weather == WEATHER_STORM:
+                    target_wind = random.uniform(-10.0, 10.0)
+                elif current_weather == WEATHER_RAIN:
+                    target_wind = random.uniform(-3.0, 3.0)
+                else:
+                    target_wind = 0.0
+            current_wind += (target_wind - current_wind) * 0.02
+
+            weather_timer += 1
+            
+            if current_weather in [WEATHER_RAIN, WEATHER_STORM]:
+                effective_duration = max(0, WEATHER_CHANGE_TIME - water_depletion)
             else:
-                target_wind = 0.0
-        current_wind += (target_wind - current_wind) * 0.02
+                effective_duration = WEATHER_CHANGE_TIME
 
-        # --- Weather Logic ---
-        weather_timer += 1
-        if weather_timer >= WEATHER_CHANGE_TIME:
-            weather_timer = 0
-            current_weather = get_next_weather(current_weather)
+            if weather_timer >= effective_duration:
+                weather_timer = 0
+                current_weather = get_next_weather(current_weather)
+                
+                if current_weather in [WEATHER_RAIN, WEATHER_STORM]:
+                    if max(0, WEATHER_CHANGE_TIME - water_depletion) <= 0:
+                        current_weather = WEATHER_CLOUDY 
+                        
+                for cloud in clouds:
+                    cloud.set_weather(current_weather)
+
             for cloud in clouds:
-                cloud.set_weather(current_weather)
+                cloud.update(clouds, current_weather)
+                
+                is_shrinking = (0 < cloud.pop_timer <= 30)
+                
+                if cloud.weather in [WEATHER_RAIN, WEATHER_STORM] and not is_shrinking:
+                    spawn_chance = 0.8 if cloud.pop_timer > 0 else (0.4 if cloud.weather == WEATHER_STORM else 0.1)
+                    
+                    if random.random() < spawn_chance:
+                        visual_width_offset = int(cloud.rect.width * 0.2) if cloud.pop_timer > 0 else 0
+                        drop_x = random.randint(cloud.rect.left - visual_width_offset, cloud.rect.right + visual_width_offset)
+                        drop_y = cloud.rect.bottom - 10
+                        raindrops.append(Raindrop(drop_x, drop_y, cloud.weather))
 
-        # --- Cloud & Rain Logic ---
-        for cloud in clouds:
-            cloud.update(clouds, current_weather)
-            
-            if cloud.weather in [WEATHER_RAIN, WEATHER_STORM]:
-                spawn_chance = 0.4 if cloud.weather == WEATHER_STORM else 0.1
-                if random.random() < spawn_chance:
-                    drop_x = random.randint(cloud.rect.left + 10, cloud.rect.right - 10)
-                    drop_y = cloud.rect.bottom - 10
-                    raindrops.append(Raindrop(drop_x, drop_y, cloud.weather))
+            for drop in reversed(raindrops):
+                drop.update(current_wind)
+                
+                if drop.y + drop.length >= current_floor:
+                    splashes.append(Splash(drop.x + drop.speed_x, current_floor, drop.weather_type))
+                    raindrops.remove(drop)
+                elif drop.x < 0 or drop.x > screen_w:
+                    raindrops.remove(drop)
 
-        # --- Update Raindrops & Splashes ---
-        for drop in reversed(raindrops):
-            drop.update(current_wind)
-            
-            if drop.y + drop.length >= current_floor:
-                splashes.append(Splash(drop.x + drop.speed_x, current_floor, drop.weather_type))
-                raindrops.remove(drop)
-            elif drop.x < 0 or drop.x > screen_w:
-                raindrops.remove(drop)
+            for splash in reversed(splashes):
+                if not splash.update():
+                    splashes.remove(splash)
 
-        for splash in reversed(splashes):
-            if not splash.update():
-                splashes.remove(splash)
-
-        # --- Update Characters ---
-        for char in characters:
-            char.update(current_floor)
+            for char in characters:
+                char.update(current_floor)
 
         # --- Render Logic ---
         screen.fill(TRANSPARENT_KEY)
@@ -366,6 +693,33 @@ def main():
             cloud.draw(screen)
         for char in characters:
             char.draw(screen)
+            
+        if not game_paused:
+            radial_menu.draw(screen)
+            
+        # --- Draw Pause Menu (Draws dynamically!) ---
+        if game_paused:
+            pause_menu.draw(screen)
+            
+        # --- Draw Debug Menu ---
+        if debug_mode:
+            debug_info = [
+                f"=== DEBUG MODE ===",
+                f"FPS: {clock.get_fps():.1f}",
+                f"Game Paused: {game_paused}",
+                f"Weather: {current_weather.upper()}",
+                f"Wind Speed: {current_wind:.2f}",
+                f"Water Depletion: {water_depletion / FPS:.1f}s / {MAX_DEPLETION / FPS:.1f}s",
+                f"Weather Timer: {weather_timer / FPS:.1f}s / {WEATHER_CHANGE_TIME / FPS:.1f}s",
+                f"Raindrops: {len(raindrops)} | Splashes: {len(splashes)}"
+            ]
+            y_offset = 10
+            for info in debug_info:
+                text_surf = debug_font.render(info, True, (0, 255, 0)) 
+                bg_rect = text_surf.get_rect(topleft=(10, y_offset))
+                pygame.draw.rect(screen, (0, 0, 0), bg_rect) 
+                screen.blit(text_surf, (10, y_offset))
+                y_offset += 22
         
         pygame.display.flip()
         clock.tick(FPS)
