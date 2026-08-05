@@ -6,13 +6,60 @@ import random
 import math
 from ctypes import wintypes
 
-# --- Ctypes structure for global mouse tracking ---
-class POINT(ctypes.Structure):
-    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+# ==========================================
+# --- CONFIGURATION & TWEAKS ---
+# ==========================================
 
-# --- Global Configuration ---
+# Rendering
 FPS = 60
 TRANSPARENT_KEY = (1, 1, 1) 
+
+# Cursor Settings & Offsets
+CURSOR_LERP_SPEED = 0.35
+CURSOR_RADIAL_Y_OFFSET = 28       # Upward jump when locking to radial icons
+CURSOR_SLOT_INWARD_OFFSET = 25    # Inward pull when hovering a backpack slot
+CURSOR_GRABBING_Y_OFFSET = 25     # Downward visual shift to cover the human while holding
+
+# Interaction Thresholds
+DRAG_HOLD_DELAY_MS = 150          # Milliseconds required to hold before grabbing vs tapping
+
+# UI / Menu Settings
+RADIAL_MENU_RADIUS = 75
+INV_COLS = 4
+INV_ROWS = 4
+INV_SLOT_SIZE = 32
+INV_PADDING_X = 9
+INV_PADDING_Y = 10
+INV_OFFSET_X = 1
+INV_OFFSET_Y = -7
+
+# Character Settings
+CHARACTER_TARGET_HEIGHT = 50
+WALK_SPEED_MIN = 0.5
+WALK_SPEED_MAX = 1.5
+GRAVITY = 0.8
+IDLE_TIME_MIN = 60
+IDLE_TIME_MAX = 240
+WALK_TIME_MIN = 90
+WALK_TIME_MAX = 300
+
+# Weather & Environment Settings
+WEATHER_CHANGE_TIME_SECONDS = 15
+MAX_WATER_DEPLETION_SECONDS = 25
+CLOUD_SPEED_MIN = 0.8
+CLOUD_SPEED_MAX = 1.2
+CLOUD_SCALE_MIN = 0.3
+CLOUD_SCALE_MAX = 0.5
+WIND_STORM_RANGE = 10.0
+WIND_RAIN_RANGE = 3.0
+
+# ==========================================
+# --- CORE LOGIC ---
+# ==========================================
+
+# Ctypes structure for global mouse tracking
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
 
 # Weather Types
 WEATHER_CLOUDY = "cloudy"
@@ -78,11 +125,20 @@ def create_fallback_selecting_png():
     pygame.draw.polygon(surf, (0, 0, 0), pts, 2)
     return surf
 
+def create_fallback_grabbing_png():
+    surf = pygame.Surface((14, 14), pygame.SRCALPHA)
+    pygame.draw.circle(surf, (255, 100, 0), (7, 7), 6)
+    pygame.draw.circle(surf, (0, 0, 0), (7, 7), 6, 2)
+    return surf
+
 # --- Custom Cursor Class ---
 class CustomCursor:
     def __init__(self, assets):
         self.cursor_img = assets['cursor']
         self.selecting_img = assets['selecting']
+        self.grabbing_img = assets['grabbing']
+        
+        self.hover_ui_img = pygame.transform.rotate(self.selecting_img, -135)
         
         pt = POINT()
         ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
@@ -91,12 +147,12 @@ class CustomCursor:
         self.facing_left = False
         
         self.cursor_state = "normal" 
-        self.lerp_speed = 0.35 
 
-    def update(self, characters, is_paused, radial_menu, inventory_menu, pause_menu):
+    def update(self, characters, is_paused, radial_menu, inventory_menu, pause_menu, is_grabbing):
         pt = POINT()
         ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
         actual_mouse_x, actual_mouse_y = pt.x, pt.y
+        actual_pos = (actual_mouse_x, actual_mouse_y)
         
         dx = actual_mouse_x - self.last_mouse_x
         if dx < 0:
@@ -109,54 +165,65 @@ class CustomCursor:
         target_y = actual_mouse_y
         self.cursor_state = "normal"
 
-        # Game Logic: Get the CUSTOM cursor's position for physical interactions
-        current_pos = (self.x, self.y)
-
-        if is_paused:
-            # Physical custom cursor touches a pause menu button
-            if pause_menu.is_hovering(current_pos):
+        if is_grabbing:
+            self.cursor_state = "grabbing"
+            # Removed the logic offset here so the physics don't jump around!
+            
+        elif is_paused:
+            if pause_menu.is_hovering(actual_pos):
                 self.cursor_state = "hover_ui"
         else:
-            # Magnetic lock-on uses physical mouse intention
-            hovered_icon_pos = radial_menu.get_hovered_icon_center((actual_mouse_x, actual_mouse_y))
+            hovered_icon_pos = radial_menu.get_hovered_icon_center(actual_pos)
             
             hovered_npc = None
             if not hovered_icon_pos:
                 for char in characters:
-                    if char.rect.collidepoint((actual_mouse_x, actual_mouse_y)):
+                    if char.rect.collidepoint(actual_pos):
                         hovered_npc = char
                         break
 
             if hovered_icon_pos:
                 target_x, target_y = hovered_icon_pos
+                target_y -= CURSOR_RADIAL_Y_OFFSET
                 self.cursor_state = "locked"
             elif hovered_npc:
                 target_x = hovered_npc.rect.centerx
                 target_y = hovered_npc.rect.top - 20
                 self.cursor_state = "locked"
-            
-            # Inventory UI hover uses custom cursor physical presence
-            elif inventory_menu.is_hovering(current_pos):
-                self.cursor_state = "hover_ui"
+            else:
+                hovered_slot = inventory_menu.get_hovered_slot(actual_pos)
+                
+                if hovered_slot:
+                    self.cursor_state = "hover_slot"
+                    target_x = actual_pos[0] + (self.hover_ui_img.get_width() // 2) - CURSOR_SLOT_INWARD_OFFSET
+                    target_y = actual_pos[1] + (self.hover_ui_img.get_height() // 2) - CURSOR_SLOT_INWARD_OFFSET
+                    
+                elif inventory_menu.is_hovering(actual_pos):
+                    self.cursor_state = "hover_ui"
 
-        self.x += (target_x - self.x) * self.lerp_speed
-        self.y += (target_y - self.y) * self.lerp_speed
+        self.x += (target_x - self.x) * CURSOR_LERP_SPEED
+        self.y += (target_y - self.y) * CURSOR_LERP_SPEED
 
     def draw(self, surface):
         img_to_draw = self.cursor_img
         
         if self.cursor_state == "locked":
             img_to_draw = self.selecting_img
-        elif self.cursor_state == "hover_ui":
-            # --- FIXED: Rotates -135 degrees when hovering UI ---
-            img_to_draw = pygame.transform.rotate(self.selecting_img, -135)
-        elif self.facing_left:
+        elif self.cursor_state == "grabbing":
+            img_to_draw = self.grabbing_img
+        elif self.cursor_state in ("hover_ui", "hover_slot"):
+            img_to_draw = self.hover_ui_img
+            
+        if self.facing_left and self.cursor_state == "normal":
             img_to_draw = pygame.transform.flip(img_to_draw, True, False)
             
         draw_rect = img_to_draw.get_rect()
         
-        # --- FIXED: Completely centers the image on the active coordinate ---
-        draw_rect.center = (self.x, self.y)
+        # --- FIXED: Only offset the visual drawing center, not the logic ---
+        if self.cursor_state == "grabbing":
+            draw_rect.center = (self.x, self.y + CURSOR_GRABBING_Y_OFFSET)
+        else:
+            draw_rect.center = (self.x, self.y)
             
         surface.blit(img_to_draw, draw_rect)
 
@@ -167,15 +234,13 @@ class InventoryMenu:
         self.rect = self.bg_sprite.get_rect()
         self.active_npc = None
         
-        self.cols = 4
-        self.rows = 4
-        self.slot_size = 32 
-        
-        self.padding_x = 9
-        self.padding_y = 10
-        
-        self.grid_offset_x = 1
-        self.grid_offset_y = -7
+        self.cols = INV_COLS
+        self.rows = INV_ROWS
+        self.slot_size = INV_SLOT_SIZE
+        self.padding_x = INV_PADDING_X
+        self.padding_y = INV_PADDING_Y
+        self.grid_offset_x = INV_OFFSET_X
+        self.grid_offset_y = INV_OFFSET_Y
 
     def open_for(self, npc):
         self.active_npc = npc
@@ -192,9 +257,9 @@ class InventoryMenu:
             return False
         return True
 
-    def is_hovering(self, mouse_pos):
+    def get_hovered_slot(self, mouse_pos):
         if not self.active_npc:
-            return False
+            return None
             
         grid_w = (self.cols * self.slot_size) + ((self.cols - 1) * self.padding_x)
         grid_h = (self.rows * self.slot_size) + ((self.rows - 1) * self.padding_y)
@@ -211,8 +276,11 @@ class InventoryMenu:
                 slot_rect = pygame.Rect(sx, sy, self.slot_size, self.slot_size)
                 
                 if slot_rect.collidepoint(mouse_pos):
-                    return True
-        return False
+                    return slot_rect
+        return None
+
+    def is_hovering(self, mouse_pos):
+        return self.get_hovered_slot(mouse_pos) is not None
 
     def draw(self, surface, mouse_pos):
         if not self.active_npc:
@@ -314,7 +382,7 @@ class PauseMenu:
 # --- Radial Menu Class ---
 class RadialMenu:
     def __init__(self, assets):
-        self.radius = 75
+        self.radius = RADIAL_MENU_RADIUS
         self.active_npc = None
         self.icons = {
             "move": assets['move'],
@@ -434,10 +502,9 @@ class Person:
         self.screen_w = screen_w
         self.taskbar_y = get_dynamic_floor() 
         
-        TARGET_HEIGHT = 50
-        scale_ratio = TARGET_HEIGHT / sprite.get_height()
+        scale_ratio = CHARACTER_TARGET_HEIGHT / sprite.get_height()
         new_width = max(1, int(sprite.get_width() * scale_ratio))
-        self.base_sprite = pygame.transform.scale(sprite, (new_width, TARGET_HEIGHT))
+        self.base_sprite = pygame.transform.scale(sprite, (new_width, CHARACTER_TARGET_HEIGHT))
         
         self.x = start_x
         self.y = self.taskbar_y
@@ -445,9 +512,9 @@ class Person:
         
         self.vx = 0
         self.state = "idle" 
-        self.state_timer = random.randint(60, 180)
+        self.state_timer = random.randint(IDLE_TIME_MIN, IDLE_TIME_MAX)
         self.facing_left = False
-        self.walk_speed = random.uniform(0.5, 1.5)
+        self.walk_speed = random.uniform(WALK_SPEED_MIN, WALK_SPEED_MAX)
         
         self.menu_open = False
         self.is_dragged = False 
@@ -463,7 +530,7 @@ class Person:
             
         if self.y < current_floor or self.state == "falling":
             self.state = "falling"
-            self.vy += 0.8  
+            self.vy += GRAVITY  
             self.y += self.vy
             self.angle += 20  
             
@@ -490,11 +557,11 @@ class Person:
             if self.state == "idle":
                 self.state = "walk"
                 self.vx = random.choice([-self.walk_speed, self.walk_speed])
-                self.state_timer = random.randint(90, 300) 
+                self.state_timer = random.randint(WALK_TIME_MIN, WALK_TIME_MAX) 
             else:
                 self.state = "idle"
                 self.vx = 0
-                self.state_timer = random.randint(60, 240) 
+                self.state_timer = random.randint(IDLE_TIME_MIN, IDLE_TIME_MAX) 
 
         if self.state == "walk":
             self.x += self.vx
@@ -613,8 +680,8 @@ class Cloud:
         return False
 
     def respawn(self, existing_clouds, global_weather, start_offscreen=True):
-        self.scale = random.uniform(0.3, 0.5)
-        self.speed = random.uniform(0.8, 1.2)
+        self.scale = random.uniform(CLOUD_SCALE_MIN, CLOUD_SCALE_MAX)
+        self.speed = random.uniform(CLOUD_SPEED_MIN, CLOUD_SPEED_MAX)
         self.weather = global_weather
         self.is_transitioning = False 
         self.pop_timer = 0
@@ -779,6 +846,12 @@ def load_assets():
     except pygame.error:
         assets['selecting'] = pygame.transform.scale(create_fallback_selecting_png(), (60, 60))
 
+    try:
+        grab_img = pygame.image.load(os.path.join(asset_dir, "grabbing.png")).convert_alpha()
+        assets['grabbing'] = pygame.transform.scale(grab_img, (60, 60))
+    except pygame.error:
+        assets['grabbing'] = pygame.transform.scale(create_fallback_grabbing_png(), (60, 60))
+
     return assets
 
 def main():
@@ -806,10 +879,12 @@ def main():
     debug_mode = False
     game_paused = False 
     
+    potential_drag_npc = None
+    mouse_down_time = 0
+    
     dragging_npc = None
     drag_offset_x = 0
     drag_offset_y = 0
-    drag_start_pos = (0, 0)
     
     radial_menu = RadialMenu(assets)
     pause_menu = PauseMenu(screen_w, screen_h, assets)
@@ -823,10 +898,10 @@ def main():
     
     current_weather = WEATHER_CLOUDY
     weather_timer = 0
-    WEATHER_CHANGE_TIME = FPS * 15 
+    MAX_DEPLETION = FPS * MAX_WATER_DEPLETION_SECONDS 
+    WEATHER_CHANGE_TIME = FPS * WEATHER_CHANGE_TIME_SECONDS
     
     water_depletion = 0 
-    MAX_DEPLETION = FPS * 25 
     
     current_wind = 0.0
     target_wind = 0.0
@@ -842,7 +917,9 @@ def main():
     while running:
         current_floor = get_dynamic_floor()
         
-        # --- FIXED: Use the CUSTOM cursor for physical game logic! ---
+        pt = POINT()
+        ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+        actual_mouse_pos = (pt.x, pt.y)
         custom_mouse_pos = (int(custom_cursor.x), int(custom_cursor.y))
         
         for event in pygame.event.get():
@@ -857,27 +934,21 @@ def main():
                         game_paused = not game_paused 
                 elif event.key == pygame.K_F4:
                     debug_mode = not debug_mode
-            
-            if event.type == pygame.MOUSEMOTION:
-                if dragging_npc:
-                    dragging_npc.x = custom_mouse_pos[0] + drag_offset_x
-                    dragging_npc.y = custom_mouse_pos[1] + drag_offset_y
-                    dragging_npc.rect.midbottom = (dragging_npc.x, dragging_npc.y)
                 
             if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                if potential_drag_npc:
+                    radial_menu.open_for(potential_drag_npc)
+                    potential_drag_npc = None
+                    
                 if dragging_npc:
-                    dist = math.hypot(custom_mouse_pos[0] - drag_start_pos[0], custom_mouse_pos[1] - drag_start_pos[1])
-                    if dist < 5:
-                        radial_menu.open_for(dragging_npc)
-                    else:
-                        dragging_npc.state = "falling"
-                        dragging_npc.vy = 0 
+                    dragging_npc.state = "falling"
+                    dragging_npc.vy = 0 
                     dragging_npc.is_dragged = False
                     dragging_npc = None
                 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 if game_paused:
-                    action = pause_menu.handle_click(custom_mouse_pos)
+                    action = pause_menu.handle_click(actual_mouse_pos)
                     if action == "Quit Game":
                         running = False
                     elif action:
@@ -885,14 +956,14 @@ def main():
                     continue 
                 
                 if inventory_menu.active_npc:
-                    if inventory_menu.rect.collidepoint(custom_mouse_pos):
-                        inventory_menu.handle_click(custom_mouse_pos)
+                    if inventory_menu.rect.collidepoint(actual_mouse_pos):
+                        inventory_menu.handle_click(actual_mouse_pos)
                         continue 
                     else:
                         inventory_menu.close()
                 
                 if radial_menu.active_npc:
-                    action = radial_menu.handle_click(custom_mouse_pos)
+                    action = radial_menu.handle_click(actual_mouse_pos)
                     if action:
                         if action == "exit":
                             radial_menu.close()
@@ -906,7 +977,6 @@ def main():
                 
                 clicked_npc = None
                 for char in characters:
-                    # Inflate hitbox upwards so we can click the locked cursor above their head!
                     click_rect = char.rect.copy()
                     click_rect.y -= 40
                     click_rect.height += 40
@@ -915,11 +985,12 @@ def main():
                         break
                         
                 if clicked_npc:
-                    dragging_npc = clicked_npc
-                    dragging_npc.is_dragged = True
-                    drag_start_pos = custom_mouse_pos
-                    drag_offset_x = dragging_npc.x - custom_mouse_pos[0]
-                    drag_offset_y = dragging_npc.y - custom_mouse_pos[1] 
+                    potential_drag_npc = clicked_npc
+                    mouse_down_time = pygame.time.get_ticks()
+                    
+                    drag_offset_x = clicked_npc.x - custom_mouse_pos[0]
+                    drag_offset_y = clicked_npc.y - custom_mouse_pos[1] 
+                    
                     radial_menu.close()
                     inventory_menu.close()
                     continue
@@ -931,7 +1002,20 @@ def main():
                             water_depletion = MAX_DEPLETION
                         break
 
-        custom_cursor.update(characters, game_paused, radial_menu, inventory_menu, pause_menu)
+        if potential_drag_npc:
+            if pygame.time.get_ticks() - mouse_down_time >= DRAG_HOLD_DELAY_MS:
+                dragging_npc = potential_drag_npc
+                dragging_npc.is_dragged = True
+                potential_drag_npc = None
+
+        is_grabbing_human = dragging_npc is not None
+        custom_cursor.update(characters, game_paused, radial_menu, inventory_menu, pause_menu, is_grabbing_human)
+
+        if dragging_npc:
+            current_cursor_pos = (int(custom_cursor.x), int(custom_cursor.y))
+            dragging_npc.x = current_cursor_pos[0] + drag_offset_x
+            dragging_npc.y = current_cursor_pos[1] + drag_offset_y
+            dragging_npc.rect.midbottom = (dragging_npc.x, dragging_npc.y)
 
         if not game_paused:
             if water_depletion > 0:
@@ -939,9 +1023,9 @@ def main():
 
             if random.random() < 0.02: 
                 if current_weather == WEATHER_STORM:
-                    target_wind = random.uniform(-10.0, 10.0)
+                    target_wind = random.uniform(-WIND_STORM_RANGE, WIND_STORM_RANGE)
                 elif current_weather == WEATHER_RAIN:
-                    target_wind = random.uniform(-3.0, 3.0)
+                    target_wind = random.uniform(-WIND_RAIN_RANGE, WIND_RAIN_RANGE)
                 else:
                     target_wind = 0.0
             current_wind += (target_wind - current_wind) * 0.02
@@ -1005,13 +1089,12 @@ def main():
         for char in characters:
             char.draw(screen)
             
-        # UI draw methods now receive the custom cursor coordinates
         if not game_paused:
-            radial_menu.draw(screen, custom_mouse_pos)
-            inventory_menu.draw(screen, custom_mouse_pos) 
+            radial_menu.draw(screen, actual_mouse_pos)
+            inventory_menu.draw(screen, actual_mouse_pos) 
             
         if game_paused:
-            pause_menu.draw(screen, custom_mouse_pos)
+            pause_menu.draw(screen, actual_mouse_pos)
             
         if debug_mode:
             debug_info = [
