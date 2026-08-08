@@ -16,22 +16,29 @@ TRANSPARENT_KEY = (1, 1, 1)
 
 # Cursor Settings & Offsets
 CURSOR_LERP_SPEED = 0.35
-CURSOR_RADIAL_Y_OFFSET = 28       # Upward jump when locking to radial icons
-CURSOR_SLOT_INWARD_OFFSET = 25    # Inward pull when hovering a backpack slot
+CURSOR_RADIAL_Y_OFFSET = 30       # Upward jump when locking to radial icons
+CURSOR_SLOT_INWARD_OFFSET = 28    # Inward pull when hovering a backpack slot
 CURSOR_GRABBING_Y_OFFSET = 25     # Downward visual shift to cover the human while holding
 
 # Interaction Thresholds
 DRAG_HOLD_DELAY_MS = 150          # Milliseconds required to hold before grabbing vs tapping
+DRAG_DROP_THRESHOLD = 5           # Pixels of movement allowed to still count as a "click"
 
 # UI / Menu Settings
+BACKPACK_SCALE = 0.6              # Multiplier to scale the backpack while preserving proportions
 RADIAL_MENU_RADIUS = 75
 INV_COLS = 4
 INV_ROWS = 4
-INV_SLOT_SIZE = 32
+INV_SLOT_SIZE = 32                # Backpack slot size
 INV_PADDING_X = 9
 INV_PADDING_Y = 10
 INV_OFFSET_X = 1
 INV_OFFSET_Y = -7
+MAX_STACK_SIZE = 64               # Minecraft style max stacking
+
+# Item Settings
+ITEM_BASE_SIZE = 36               # Base dimension for items in the inventory
+ITEM_DRAG_SCALE = 1.5             # Multiplier for how much bigger the item gets when dragged
 
 # Character Settings
 CHARACTER_TARGET_HEIGHT = 50
@@ -103,12 +110,28 @@ def create_fallback_pause_menu_png():
     pygame.draw.rect(surf, (30, 30, 40), surf.get_rect(), border_radius=30)
     return surf
 
+def create_fallback_backpackslot_png():
+    surf = pygame.Surface((32, 32), pygame.SRCALPHA)
+    pygame.draw.rect(surf, (40, 40, 50, 200), surf.get_rect(), border_radius=3)
+    pygame.draw.rect(surf, (20, 20, 30, 255), surf.get_rect(), 2, border_radius=3)
+    return surf
+
 def create_fallback_backpack_png():
     surf = pygame.Surface((240, 260), pygame.SRCALPHA)
     pygame.draw.rect(surf, (139, 69, 19, 255), (0, 15, 240, 245), border_radius=20)
     pygame.draw.rect(surf, (80, 40, 10, 255), (0, 15, 240, 245), 4, border_radius=20)
     pygame.draw.rect(surf, (100, 50, 15, 255), (90, 0, 60, 20), border_radius=10)
     pygame.draw.rect(surf, (80, 40, 10, 255), (90, 0, 60, 20), 4, border_radius=10)
+    
+    # Generate backup red zones (4x4) if the actual image fails to load
+    start_x = 20
+    start_y = 50
+    for r in range(4):
+        for c in range(4):
+            px = start_x + c * (32 + 10)
+            py = start_y + r * (32 + 10)
+            pygame.draw.rect(surf, (255, 0, 0, 255), (px, py, 32, 32))
+            
     return surf
 
 def create_fallback_cursor_png():
@@ -131,6 +154,20 @@ def create_fallback_grabbing_png():
     pygame.draw.circle(surf, (0, 0, 0), (7, 7), 6, 2)
     return surf
 
+def create_fallback_pebble_png():
+    surf = pygame.Surface((ITEM_BASE_SIZE, ITEM_BASE_SIZE), pygame.SRCALPHA)
+    center = ITEM_BASE_SIZE // 2
+    pygame.draw.circle(surf, (150, 150, 150), (center, center), center - 2)
+    pygame.draw.circle(surf, (100, 100, 100), (center, center), center - 2, 2)
+    pygame.draw.circle(surf, (200, 200, 200), (center - 4, center - 4), 3)
+    return surf
+
+def create_fallback_stick_png():
+    surf = pygame.Surface((ITEM_BASE_SIZE, ITEM_BASE_SIZE), pygame.SRCALPHA)
+    pygame.draw.line(surf, (139, 69, 19), (8, ITEM_BASE_SIZE - 8), (ITEM_BASE_SIZE - 8, 8), 4)
+    pygame.draw.line(surf, (100, 50, 15), (8, ITEM_BASE_SIZE - 8), (ITEM_BASE_SIZE - 8, 8), 2)
+    return surf
+
 # --- Custom Cursor Class ---
 class CustomCursor:
     def __init__(self, assets):
@@ -148,7 +185,7 @@ class CustomCursor:
         
         self.cursor_state = "normal" 
 
-    def update(self, characters, is_paused, radial_menu, inventory_menu, pause_menu, is_grabbing):
+    def update(self, characters, is_paused, radial_menu, inventory_menu, pause_menu, is_grabbing_human, is_grabbing_item):
         pt = POINT()
         ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
         actual_mouse_x, actual_mouse_y = pt.x, pt.y
@@ -165,9 +202,10 @@ class CustomCursor:
         target_y = actual_mouse_y
         self.cursor_state = "normal"
 
-        if is_grabbing:
-            self.cursor_state = "grabbing"
-            # Removed the logic offset here so the physics don't jump around!
+        if is_grabbing_human:
+            self.cursor_state = "grabbing_human"
+        elif is_grabbing_item:
+            self.cursor_state = "grabbing_item"
             
         elif is_paused:
             if pause_menu.is_hovering(actual_pos):
@@ -209,7 +247,7 @@ class CustomCursor:
         
         if self.cursor_state == "locked":
             img_to_draw = self.selecting_img
-        elif self.cursor_state == "grabbing":
+        elif self.cursor_state in ("grabbing_human", "grabbing_item"):
             img_to_draw = self.grabbing_img
         elif self.cursor_state in ("hover_ui", "hover_slot"):
             img_to_draw = self.hover_ui_img
@@ -219,28 +257,101 @@ class CustomCursor:
             
         draw_rect = img_to_draw.get_rect()
         
-        # --- FIXED: Only offset the visual drawing center, not the logic ---
-        if self.cursor_state == "grabbing":
+        if self.cursor_state == "grabbing_human":
             draw_rect.center = (self.x, self.y + CURSOR_GRABBING_Y_OFFSET)
         else:
             draw_rect.center = (self.x, self.y)
             
         surface.blit(img_to_draw, draw_rect)
 
-# --- Inventory Menu Class ---
+# --- Dropped Item Physics Class ---
+class DroppedItem:
+    def __init__(self, item_id, sprite, count, x, y):
+        self.id = item_id
+        self.sprite = sprite
+        self.count = count
+        self.x = x
+        self.y = y
+        self.vx = random.uniform(-2, 2)
+        self.vy = random.uniform(-4, -1)
+        self.rect = self.sprite.get_rect(midbottom=(self.x, self.y))
+        self.settled = False
+
+    def update(self, current_floor):
+        if not self.settled:
+            self.vy += GRAVITY
+            self.x += self.vx
+            self.y += self.vy
+            if self.y >= current_floor:
+                self.y = current_floor
+                self.vy = 0
+                self.vx = 0
+                self.settled = True
+            self.rect.midbottom = (self.x, self.y)
+
+    def draw(self, surface, item_font):
+        surface.blit(self.sprite, self.rect)
+        if self.count > 1:
+            count_surf = item_font.render(str(self.count), True, (255, 255, 255))
+            count_rect = count_surf.get_rect(bottomright=(self.rect.right, self.rect.bottom))
+            for ox, oy in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+                outline = item_font.render(str(self.count), True, (0,0,0))
+                surface.blit(outline, count_rect.move(ox, oy))
+            surface.blit(count_surf, count_rect)
+
+# --- Dynamic Inventory Menu Class ---
 class InventoryMenu:
     def __init__(self, assets):
-        self.bg_sprite = assets['backpack']
+        self.bg_sprite = assets['backpack'].copy() 
         self.rect = self.bg_sprite.get_rect()
         self.active_npc = None
+        self.slot_sprite = assets['backpackslot']
         
-        self.cols = INV_COLS
-        self.rows = INV_ROWS
-        self.slot_size = INV_SLOT_SIZE
-        self.padding_x = INV_PADDING_X
-        self.padding_y = INV_PADDING_Y
-        self.grid_offset_x = INV_OFFSET_X
-        self.grid_offset_y = INV_OFFSET_Y
+        self.slots = []         # Holds the logical, relative coordinates
+        self.slot_sprites = []  # Holds dynamically scaled Sprites for the zones
+        
+        width, height = self.bg_sprite.get_size()
+        px_array = pygame.PixelArray(self.bg_sprite)
+        visited = set()
+        
+        # Scan the image dynamically for Pure Red (255, 0, 0)
+        for y in range(height):
+            for x in range(width):
+                if (x, y) not in visited:
+                    color = self.bg_sprite.unmap_rgb(px_array[x, y])
+                    if color.r == 255 and color.g == 0 and color.b == 0:
+                        w = 0
+                        while x + w < width:
+                            c2 = self.bg_sprite.unmap_rgb(px_array[x + w, y])
+                            if c2.r == 255 and c2.g == 0 and c2.b == 0:
+                                w += 1
+                            else:
+                                break
+                        h = 0
+                        while y + h < height:
+                            c3 = self.bg_sprite.unmap_rgb(px_array[x, y + h])
+                            if c3.r == 255 and c3.g == 0 and c3.b == 0:
+                                h += 1
+                            else:
+                                break
+                                
+                        new_slot = pygame.Rect(x, y, w, h)
+                        self.slots.append(new_slot)
+                        
+                        scaled_sprite = pygame.transform.scale(self.slot_sprite, (w, h))
+                        self.slot_sprites.append(scaled_sprite)
+                        
+                        for cy in range(y, y + h):
+                            for cx in range(x, x + w):
+                                visited.add((cx, cy))
+                                px_array[cx, cy] = (0, 0, 0, 0) # Erase the red indicator visually
+                    else:
+                        visited.add((x, y))
+        
+        px_array.close()
+        
+        # Sort slots logically (top to bottom, left to right) based on image placement
+        self.slots.sort(key=lambda r: (round(r.y / 10) * 10, r.x))
 
     def open_for(self, npc):
         self.active_npc = npc
@@ -257,66 +368,59 @@ class InventoryMenu:
             return False
         return True
 
-    def get_hovered_slot(self, mouse_pos):
+    def get_hovered_slot_index(self, mouse_pos):
         if not self.active_npc:
             return None
             
-        grid_w = (self.cols * self.slot_size) + ((self.cols - 1) * self.padding_x)
-        grid_h = (self.rows * self.slot_size) + ((self.rows - 1) * self.padding_y)
-        
-        start_x = self.rect.x + (self.rect.width - grid_w) // 2 + self.grid_offset_x
-        body_y_offset = 15 
-        body_height = self.rect.height - body_y_offset
-        start_y = self.rect.y + body_y_offset + (body_height - grid_h) // 2 + self.grid_offset_y
-        
-        for r in range(self.rows):
-            for c in range(self.cols):
-                sx = start_x + c * (self.slot_size + self.padding_x)
-                sy = start_y + r * (self.slot_size + self.padding_y)
-                slot_rect = pygame.Rect(sx, sy, self.slot_size, self.slot_size)
-                
-                if slot_rect.collidepoint(mouse_pos):
-                    return slot_rect
+        mx, my = mouse_pos
+        for i, slot_rect in enumerate(self.slots):
+            absolute_rect = slot_rect.move(self.rect.x, self.rect.y)
+            if absolute_rect.collidepoint(mx, my):
+                return i
+        return None
+
+    def get_hovered_slot(self, mouse_pos):
+        idx = self.get_hovered_slot_index(mouse_pos)
+        if idx is not None:
+            return self.slots[idx].move(self.rect.x, self.rect.y)
         return None
 
     def is_hovering(self, mouse_pos):
         return self.get_hovered_slot(mouse_pos) is not None
 
-    def draw(self, surface, mouse_pos):
+    def draw(self, surface, mouse_pos, item_font):
         if not self.active_npc:
             return
             
         self.rect.midbottom = (self.active_npc.x, self.active_npc.y - 60)
-            
         surface.blit(self.bg_sprite, self.rect.topleft)
         mx, my = mouse_pos
         
-        grid_w = (self.cols * self.slot_size) + ((self.cols - 1) * self.padding_x)
-        grid_h = (self.rows * self.slot_size) + ((self.rows - 1) * self.padding_y)
-        
-        start_x = self.rect.x + (self.rect.width - grid_w) // 2 + self.grid_offset_x
-        
-        body_y_offset = 15 
-        body_height = self.rect.height - body_y_offset
-        start_y = self.rect.y + body_y_offset + (body_height - grid_h) // 2 + self.grid_offset_y
-        
-        for r in range(self.rows):
-            for c in range(self.cols):
-                sx = start_x + c * (self.slot_size + self.padding_x)
-                sy = start_y + r * (self.slot_size + self.padding_y)
-                slot_rect = pygame.Rect(sx, sy, self.slot_size, self.slot_size)
+        for idx, slot_rect in enumerate(self.slots):
+            absolute_rect = slot_rect.move(self.rect.x, self.rect.y)
+            is_hovered = absolute_rect.collidepoint((mx, my))
+            
+            base_slot_surf = self.slot_sprites[idx].copy()
+            
+            if is_hovered:
+                highlight = pygame.Surface(absolute_rect.size, pygame.SRCALPHA)
+                highlight.fill((255, 255, 255, 50)) 
+                base_slot_surf.blit(highlight, (0, 0))
                 
-                is_hovered = slot_rect.collidepoint((mx, my))
-                
-                slot_surf = pygame.Surface((self.slot_size, self.slot_size), pygame.SRCALPHA)
-                
-                bg_color = (40, 40, 50, 180) if not is_hovered else (80, 80, 90, 220)
-                pygame.draw.rect(slot_surf, bg_color, slot_surf.get_rect(), border_radius=3)
-                
-                border_color = (20, 20, 30, 255) if not is_hovered else (255, 215, 0, 255)
-                pygame.draw.rect(slot_surf, border_color, slot_surf.get_rect(), 2, border_radius=3)
-                
-                surface.blit(slot_surf, (sx, sy))
+            surface.blit(base_slot_surf, absolute_rect.topleft)
+            
+            if idx < len(self.active_npc.inventory):
+                item = self.active_npc.inventory[idx]
+                if item:
+                    item_rect = item['sprite'].get_rect(center=absolute_rect.center)
+                    surface.blit(item['sprite'], item_rect)
+                    if item['count'] > 1:
+                        count_surf = item_font.render(str(item['count']), True, (255, 255, 255))
+                        count_rect = count_surf.get_rect(bottomright=(absolute_rect.right - 2, absolute_rect.bottom - 2))
+                        for ox, oy in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+                            outline = item_font.render(str(item['count']), True, (0,0,0))
+                            surface.blit(outline, count_rect.move(ox, oy))
+                        surface.blit(count_surf, count_rect)
 
 # --- Pause Menu Class ---
 class PauseMenu:
@@ -497,7 +601,7 @@ class RadialMenu:
         surface.blit(temp_surf, (cx - self.radius, cy - self.radius))
 
 class Person:
-    def __init__(self, name, sprite, screen_w, start_x):
+    def __init__(self, name, sprite, screen_w, start_x, num_slots):
         self.name = name
         self.screen_w = screen_w
         self.taskbar_y = get_dynamic_floor() 
@@ -522,6 +626,9 @@ class Person:
         
         self.anim_tick = 0
         self.angle = 0
+        
+        # Dynamically scaled inventory size based on detected red zones
+        self.inventory = [None] * num_slots
 
     def update(self, current_floor):
         if self.is_dragged:
@@ -830,9 +937,15 @@ def load_assets():
         
     try:
         bag_img = pygame.image.load(os.path.join(asset_dir, "backpack.png")).convert_alpha()
-        assets['backpack'] = pygame.transform.scale(bag_img, (240, 260))
+        # --- FIXED: Use BACKPACK_SCALE to resize while preserving aspect ratio ---
+        new_w = max(1, int(bag_img.get_width() * BACKPACK_SCALE))
+        new_h = max(1, int(bag_img.get_height() * BACKPACK_SCALE))
+        assets['backpack'] = pygame.transform.scale(bag_img, (new_w, new_h))
     except pygame.error:
-        assets['backpack'] = create_fallback_backpack_png()
+        fb_img = create_fallback_backpack_png()
+        new_w = max(1, int(fb_img.get_width() * BACKPACK_SCALE))
+        new_h = max(1, int(fb_img.get_height() * BACKPACK_SCALE))
+        assets['backpack'] = pygame.transform.scale(fb_img, (new_w, new_h))
 
     try:
         cur_img = pygame.image.load(os.path.join(asset_dir, "cursor.png")).convert_alpha()
@@ -851,6 +964,24 @@ def load_assets():
         assets['grabbing'] = pygame.transform.scale(grab_img, (60, 60))
     except pygame.error:
         assets['grabbing'] = pygame.transform.scale(create_fallback_grabbing_png(), (60, 60))
+
+    try:
+        bslot_img = pygame.image.load(os.path.join(asset_dir, "backpackslot.png")).convert_alpha()
+        assets['backpackslot'] = bslot_img
+    except pygame.error:
+        assets['backpackslot'] = create_fallback_backpackslot_png()
+
+    try:
+        peb_img = pygame.image.load(os.path.join(asset_dir, "pebble.png")).convert_alpha()
+        assets['pebble'] = pygame.transform.scale(peb_img, (ITEM_BASE_SIZE, ITEM_BASE_SIZE))
+    except pygame.error:
+        assets['pebble'] = pygame.transform.scale(create_fallback_pebble_png(), (ITEM_BASE_SIZE, ITEM_BASE_SIZE))
+
+    try:
+        stick_img = pygame.image.load(os.path.join(asset_dir, "stick.png")).convert_alpha()
+        assets['stick'] = pygame.transform.scale(stick_img, (ITEM_BASE_SIZE, ITEM_BASE_SIZE))
+    except pygame.error:
+        assets['stick'] = pygame.transform.scale(create_fallback_stick_png(), (ITEM_BASE_SIZE, ITEM_BASE_SIZE))
 
     return assets
 
@@ -871,10 +1002,13 @@ def main():
     try:
         if font_path:
             debug_font = pygame.font.Font(font_path, 18)
+            item_font = pygame.font.Font(font_path, 14)
         else:
             debug_font = pygame.font.SysFont("Courier New", 18, bold=True)
+            item_font = pygame.font.SysFont("Courier New", 14, bold=True)
     except:
         debug_font = pygame.font.SysFont("Courier New", 18, bold=True)
+        item_font = pygame.font.SysFont("Courier New", 14, bold=True)
         
     debug_mode = False
     game_paused = False 
@@ -886,15 +1020,37 @@ def main():
     drag_offset_x = 0
     drag_offset_y = 0
     
+    # --- Item Dragging State ---
+    dragging_item = None
+    inv_drag_button = None
+    inv_drag_active = False
+    inv_drag_start_pos = (0, 0)
+    inv_dragged_slots = []
+    inv_drag_initial_count = 0
+    inv_drag_initial_slot_counts = {}
+    
     radial_menu = RadialMenu(assets)
     pause_menu = PauseMenu(screen_w, screen_h, assets)
     inventory_menu = InventoryMenu(assets) 
     
+    num_slots = len(inventory_menu.slots)
+    if num_slots == 0:
+        print("WARNING: No red zones found in backpack. Inventory will be empty.")
+    
     custom_cursor = CustomCursor(assets)
     
-    adam = Person("Adam", assets['adam'], screen_w, screen_w // 3)
-    eve = Person("Eve", assets['eve'], screen_w, (screen_w // 3) * 2)
+    adam = Person("Adam", assets['adam'], screen_w, screen_w // 3, num_slots)
+    eve = Person("Eve", assets['eve'], screen_w, (screen_w // 3) * 2, num_slots)
     characters = [adam, eve]
+    
+    if num_slots > 0:
+        pebble_indices = random.sample(range(num_slots), min(3, num_slots))
+        for idx in pebble_indices:
+            adam.inventory[idx] = {"id": "pebble", "sprite": assets['pebble'], "count": 1}
+            
+        stick_indices = random.sample(range(num_slots), min(4, num_slots))
+        for idx in stick_indices:
+            eve.inventory[idx] = {"id": "stick", "sprite": assets['stick'], "count": 1}
     
     current_weather = WEATHER_CLOUDY
     weather_timer = 0
@@ -912,6 +1068,7 @@ def main():
         
     raindrops = []
     splashes = []
+    dropped_items = [] 
 
     running = True
     while running:
@@ -934,19 +1091,76 @@ def main():
                         game_paused = not game_paused 
                 elif event.key == pygame.K_F4:
                     debug_mode = not debug_mode
+                    
+            if event.type == pygame.MOUSEMOTION:
+                if dragging_npc:
+                    dragging_npc.x = custom_mouse_pos[0] + drag_offset_x
+                    dragging_npc.y = custom_mouse_pos[1] + drag_offset_y
+                    dragging_npc.rect.midbottom = (dragging_npc.x, dragging_npc.y)
+                    
+                if dragging_item and inv_drag_button is not None:
+                    if not inv_drag_active:
+                        dist = math.hypot(actual_mouse_pos[0] - inv_drag_start_pos[0], actual_mouse_pos[1] - inv_drag_start_pos[1])
+                        if dist > DRAG_DROP_THRESHOLD:
+                            inv_drag_active = True
+                            
+                    if inv_drag_active and inventory_menu.active_npc:
+                        slot_idx = inventory_menu.get_hovered_slot_index(actual_mouse_pos)
+                        if slot_idx is not None and slot_idx not in inv_dragged_slots:
+                            target = inventory_menu.active_npc.inventory[slot_idx]
+                            if target is None or target['id'] == dragging_item['id']:
+                                
+                                if inv_drag_button == 3: 
+                                    if dragging_item['count'] > 0 and (target is None or target['count'] < MAX_STACK_SIZE):
+                                        inv_dragged_slots.append(slot_idx)
+                                        dragging_item['count'] -= 1
+                                        if target is None:
+                                            inventory_menu.active_npc.inventory[slot_idx] = {'id': dragging_item['id'], 'sprite': dragging_item['sprite'], 'count': 1}
+                                        else:
+                                            target['count'] += 1
+                                
+                                elif inv_drag_button == 1: 
+                                    inv_drag_initial_slot_counts[slot_idx] = target['count'] if target else 0
+                                    inv_dragged_slots.append(slot_idx)
+                                    
+                                    per_slot = inv_drag_initial_count // len(inv_dragged_slots)
+                                    remainder = inv_drag_initial_count % len(inv_dragged_slots)
+                                    dragging_item['count'] = remainder
+                                    for s_idx in inv_dragged_slots:
+                                        base_count = inv_drag_initial_slot_counts[s_idx]
+                                        new_count = base_count + per_slot
+                                        if new_count > MAX_STACK_SIZE:
+                                            diff = new_count - MAX_STACK_SIZE
+                                            new_count = MAX_STACK_SIZE
+                                            dragging_item['count'] += diff
+                                        
+                                        if new_count == 0 and base_count == 0:
+                                            inventory_menu.active_npc.inventory[s_idx] = None
+                                        elif inventory_menu.active_npc.inventory[s_idx] is None:
+                                            if new_count > 0:
+                                                inventory_menu.active_npc.inventory[s_idx] = {'id': dragging_item['id'], 'sprite': dragging_item['sprite'], 'count': new_count}
+                                        else:
+                                            inventory_menu.active_npc.inventory[s_idx]['count'] = new_count
                 
-            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-                if potential_drag_npc:
+            if event.type == pygame.MOUSEBUTTONUP and event.button in [1, 3]:
+                if potential_drag_npc and event.button == 1:
                     radial_menu.open_for(potential_drag_npc)
                     potential_drag_npc = None
                     
-                if dragging_npc:
+                if dragging_npc and event.button == 1:
                     dragging_npc.state = "falling"
                     dragging_npc.vy = 0 
                     dragging_npc.is_dragged = False
                     dragging_npc = None
+                    
+                if dragging_item and inv_drag_button == event.button:
+                    inv_drag_button = None
+                    inv_drag_active = False
+                    inv_dragged_slots = []
+                    if dragging_item and dragging_item['count'] <= 0:
+                        dragging_item = None
                 
-            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button in [1, 3]:
                 if game_paused:
                     action = pause_menu.handle_click(actual_mouse_pos)
                     if action == "Quit Game":
@@ -956,13 +1170,88 @@ def main():
                     continue 
                 
                 if inventory_menu.active_npc:
-                    if inventory_menu.rect.collidepoint(actual_mouse_pos):
-                        inventory_menu.handle_click(actual_mouse_pos)
+                    if dragging_item:
+                        slot_idx = inventory_menu.get_hovered_slot_index(actual_mouse_pos)
+                        if slot_idx is not None:
+                            target = inventory_menu.active_npc.inventory[slot_idx]
+                            
+                            if event.button == 1: 
+                                if target is None:
+                                    inventory_menu.active_npc.inventory[slot_idx] = dragging_item
+                                    dragging_item = None
+                                elif target['id'] == dragging_item['id']:
+                                    total = target['count'] + dragging_item['count']
+                                    if total <= MAX_STACK_SIZE:
+                                        target['count'] = total
+                                        dragging_item = None
+                                    else:
+                                        target['count'] = MAX_STACK_SIZE
+                                        dragging_item['count'] = total - MAX_STACK_SIZE
+                                        inv_drag_button = event.button
+                                        inv_drag_start_pos = actual_mouse_pos
+                                        inv_drag_active = False
+                                        inv_dragged_slots = []
+                                        inv_drag_initial_count = dragging_item['count']
+                                        inv_drag_initial_slot_counts = {}
+                                else:
+                                    inventory_menu.active_npc.inventory[slot_idx] = dragging_item
+                                    dragging_item = target
+                            elif event.button == 3: 
+                                if target is None:
+                                    inventory_menu.active_npc.inventory[slot_idx] = {'id': dragging_item['id'], 'sprite': dragging_item['sprite'], 'count': 1}
+                                    dragging_item['count'] -= 1
+                                    
+                                    inv_drag_button = event.button
+                                    inv_drag_start_pos = actual_mouse_pos
+                                    inv_drag_active = False
+                                    inv_dragged_slots = [slot_idx]
+                                    inv_drag_initial_count = dragging_item['count']
+                                    inv_drag_initial_slot_counts = {}
+                                elif target['id'] == dragging_item['id'] and target['count'] < MAX_STACK_SIZE:
+                                    target['count'] += 1
+                                    dragging_item['count'] -= 1
+                                    
+                                    inv_drag_button = event.button
+                                    inv_drag_start_pos = actual_mouse_pos
+                                    inv_drag_active = False
+                                    inv_dragged_slots = [slot_idx]
+                                    inv_drag_initial_count = dragging_item['count']
+                                    inv_drag_initial_slot_counts = {}
+                                    
+                            if dragging_item and dragging_item['count'] <= 0:
+                                dragging_item = None
+                        else:
+                            if not inventory_menu.rect.collidepoint(actual_mouse_pos):
+                                drop_x, drop_y = actual_mouse_pos
+                                if event.button == 1:
+                                    dropped_items.append(DroppedItem(dragging_item['id'], dragging_item['sprite'], dragging_item['count'], drop_x, drop_y))
+                                    dragging_item = None
+                                elif event.button == 3:
+                                    dropped_items.append(DroppedItem(dragging_item['id'], dragging_item['sprite'], 1, drop_x, drop_y))
+                                    dragging_item['count'] -= 1
+                                    if dragging_item['count'] <= 0:
+                                        dragging_item = None
                         continue 
-                    else:
+                        
+                    elif inventory_menu.rect.collidepoint(actual_mouse_pos):
+                        slot_idx = inventory_menu.get_hovered_slot_index(actual_mouse_pos)
+                        if slot_idx is not None:
+                            item = inventory_menu.active_npc.inventory[slot_idx]
+                            if item:
+                                if event.button == 1: 
+                                    dragging_item = item
+                                    inventory_menu.active_npc.inventory[slot_idx] = None
+                                elif event.button == 3: 
+                                    half = math.ceil(item['count'] / 2)
+                                    dragging_item = {'id': item['id'], 'sprite': item['sprite'], 'count': half}
+                                    item['count'] -= half
+                                    if item['count'] == 0:
+                                        inventory_menu.active_npc.inventory[slot_idx] = None
+                        continue 
+                    elif event.button == 1 and not dragging_item:
                         inventory_menu.close()
                 
-                if radial_menu.active_npc:
+                if radial_menu.active_npc and event.button == 1:
                     action = radial_menu.handle_click(actual_mouse_pos)
                     if action:
                         if action == "exit":
@@ -974,33 +1263,84 @@ def main():
                         else:
                             print(f"Clicked {action} - Feature not yet implemented!")
                         continue
-                
-                clicked_npc = None
-                for char in characters:
-                    click_rect = char.rect.copy()
-                    click_rect.y -= 40
-                    click_rect.height += 40
-                    if click_rect.collidepoint(custom_mouse_pos):
-                        clicked_npc = char
-                        break
+
+                if event.button in [1, 3] and dragging_item:
+                    clicked_npc = None
+                    for char in characters:
+                        click_rect = char.rect.copy()
+                        click_rect.y -= 40
+                        click_rect.height += 40
+                        if click_rect.collidepoint(custom_mouse_pos):
+                            clicked_npc = char
+                            break
+                    if clicked_npc:
+                        for idx, inv_item in enumerate(clicked_npc.inventory):
+                            if inv_item and inv_item['id'] == dragging_item['id']:
+                                space = MAX_STACK_SIZE - inv_item['count']
+                                if space > 0:
+                                    add_count = min(space, dragging_item['count'])
+                                    inv_item['count'] += add_count
+                                    dragging_item['count'] -= add_count
+                                    if dragging_item['count'] <= 0:
+                                        dragging_item = None
+                                        break
+                        if dragging_item:
+                            for idx, inv_item in enumerate(clicked_npc.inventory):
+                                if inv_item is None:
+                                    clicked_npc.inventory[idx] = dragging_item
+                                    dragging_item = None
+                                    break
+                        radial_menu.close()
+                        inventory_menu.close()
+                        continue
+
+                if event.button in [1, 3] and not dragging_item:
+                    clicked_dropped = None
+                    for d_item in reversed(dropped_items):
+                        if d_item.rect.inflate(15, 15).collidepoint(custom_mouse_pos):
+                            clicked_dropped = d_item
+                            break
+                            
+                    if clicked_dropped:
+                        if event.button == 1:
+                            dragging_item = {'id': clicked_dropped.id, 'sprite': clicked_dropped.sprite, 'count': clicked_dropped.count}
+                            dropped_items.remove(clicked_dropped)
+                        elif event.button == 3:
+                            half = math.ceil(clicked_dropped.count / 2)
+                            dragging_item = {'id': clicked_dropped.id, 'sprite': clicked_dropped.sprite, 'count': half}
+                            clicked_dropped.count -= half
+                            if clicked_dropped.count <= 0:
+                                dropped_items.remove(clicked_dropped)
                         
-                if clicked_npc:
-                    potential_drag_npc = clicked_npc
-                    mouse_down_time = pygame.time.get_ticks()
-                    
-                    drag_offset_x = clicked_npc.x - custom_mouse_pos[0]
-                    drag_offset_y = clicked_npc.y - custom_mouse_pos[1] 
-                    
-                    radial_menu.close()
-                    inventory_menu.close()
-                    continue
+                        continue
                 
-                for cloud in clouds:
-                    if cloud.handle_click(custom_mouse_pos):
-                        water_depletion += FPS * 5 
-                        if water_depletion > MAX_DEPLETION:
-                            water_depletion = MAX_DEPLETION
-                        break
+                if event.button == 1 and not dragging_item:
+                    clicked_npc = None
+                    for char in characters:
+                        click_rect = char.rect.copy()
+                        click_rect.y -= 40
+                        click_rect.height += 40
+                        if click_rect.collidepoint(custom_mouse_pos):
+                            clicked_npc = char
+                            break
+                            
+                    if clicked_npc:
+                        potential_drag_npc = clicked_npc
+                        mouse_down_time = pygame.time.get_ticks()
+                        
+                        drag_offset_x = clicked_npc.x - custom_mouse_pos[0]
+                        drag_offset_y = clicked_npc.y - custom_mouse_pos[1] 
+                        
+                        radial_menu.close()
+                        inventory_menu.close()
+                        continue
+                    
+                    for cloud in clouds:
+                        if cloud.handle_click(custom_mouse_pos):
+                            water_depletion += FPS * 5 
+                            if water_depletion > MAX_DEPLETION:
+                                water_depletion = MAX_DEPLETION
+                            break
 
         if potential_drag_npc:
             if pygame.time.get_ticks() - mouse_down_time >= DRAG_HOLD_DELAY_MS:
@@ -1008,14 +1348,12 @@ def main():
                 dragging_npc.is_dragged = True
                 potential_drag_npc = None
 
-        is_grabbing_human = dragging_npc is not None
-        custom_cursor.update(characters, game_paused, radial_menu, inventory_menu, pause_menu, is_grabbing_human)
+        if dragging_item and not inventory_menu.active_npc:
+            inv_drag_button = None
 
-        if dragging_npc:
-            current_cursor_pos = (int(custom_cursor.x), int(custom_cursor.y))
-            dragging_npc.x = current_cursor_pos[0] + drag_offset_x
-            dragging_npc.y = current_cursor_pos[1] + drag_offset_y
-            dragging_npc.rect.midbottom = (dragging_npc.x, dragging_npc.y)
+        is_grabbing_human = dragging_npc is not None
+        is_grabbing_item = dragging_item is not None
+        custom_cursor.update(characters, game_paused, radial_menu, inventory_menu, pause_menu, is_grabbing_human, is_grabbing_item)
 
         if not game_paused:
             if water_depletion > 0:
@@ -1077,6 +1415,9 @@ def main():
 
             for char in characters:
                 char.update(current_floor)
+                
+            for d_item in dropped_items:
+                d_item.update(current_floor)
 
         screen.fill(TRANSPARENT_KEY)
         
@@ -1086,12 +1427,16 @@ def main():
             splash.draw(screen)
         for cloud in clouds:
             cloud.draw(screen)
+            
+        for d_item in dropped_items:
+            d_item.draw(screen, item_font)
+            
         for char in characters:
             char.draw(screen)
             
         if not game_paused:
             radial_menu.draw(screen, actual_mouse_pos)
-            inventory_menu.draw(screen, actual_mouse_pos) 
+            inventory_menu.draw(screen, actual_mouse_pos, item_font) 
             
         if game_paused:
             pause_menu.draw(screen, actual_mouse_pos)
@@ -1114,6 +1459,23 @@ def main():
                 pygame.draw.rect(screen, (0, 0, 0), bg_rect) 
                 screen.blit(text_surf, (10, y_offset))
                 y_offset += 22
+                
+        if dragging_item:
+            drag_sprite = pygame.transform.scale(
+                dragging_item['sprite'], 
+                (int(dragging_item['sprite'].get_width() * ITEM_DRAG_SCALE), 
+                 int(dragging_item['sprite'].get_height() * ITEM_DRAG_SCALE))
+            )
+            drag_rect = drag_sprite.get_rect(center=actual_mouse_pos)
+            screen.blit(drag_sprite, drag_rect)
+            
+            if dragging_item['count'] > 1:
+                count_surf = item_font.render(str(dragging_item['count']), True, (255, 255, 255))
+                count_rect = count_surf.get_rect(bottomright=(drag_rect.right, drag_rect.bottom))
+                for ox, oy in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+                    outline = item_font.render(str(dragging_item['count']), True, (0,0,0))
+                    screen.blit(outline, count_rect.move(ox, oy))
+                screen.blit(count_surf, count_rect)
                 
         custom_cursor.draw(screen)
         
