@@ -60,7 +60,6 @@ CLOUD_SCALE_MIN = 0.3
 CLOUD_SCALE_MAX = 0.5
 WIND_STORM_RANGE = 10.0
 WIND_RAIN_RANGE = 3.0
-
 BOULDER_HEIGHT_MIN = 80           # Boulders will always be bigger than the 50px humans
 BOULDER_HEIGHT_MAX = 150
 TREE_HEIGHT_MIN = 120
@@ -199,6 +198,14 @@ def create_fallback_log_png():
     pygame.draw.rect(surf, (101, 67, 33), (8, 12, 20, 12))
     pygame.draw.rect(surf, (139, 69, 19), (8, 12, 20, 12), 2)
     pygame.draw.rect(surf, (205, 133, 63), (24, 12, 4, 12))
+    return surf
+
+def create_fallback_plank_png():
+    surf = pygame.Surface((ITEM_BASE_SIZE, ITEM_BASE_SIZE), pygame.SRCALPHA)
+    pygame.draw.rect(surf, (205, 133, 63), (4, 10, 28, 16))
+    pygame.draw.rect(surf, (139, 69, 19), (4, 10, 28, 16), 2)
+    pygame.draw.line(surf, (160, 82, 45), (6, 14), (30, 14), 1)
+    pygame.draw.line(surf, (160, 82, 45), (6, 22), (30, 22), 1)
     return surf
 
 def create_fallback_boulder_png():
@@ -610,41 +617,80 @@ class InventoryMenu:
             self.rect.bottomleft = (start_x, y_pos)
 
     def check_recipes(self):
-        def check_slot(idx, item_id):
-            item = self.crafting_items[idx]
-            if item_id is None:
-                return item is None
-            return item is not None and item['id'] == item_id
+        grid_ids = [[None] * 3 for _ in range(3)]
+        total_items = 0
+        log_count = 0
+        for i in range(9):
+            if self.crafting_items[i]:
+                grid_ids[i // 3][i % 3] = self.crafting_items[i]['id']
+                total_items += 1
+                if self.crafting_items[i]['id'] == 'log':
+                    log_count += 1
+                    
+        if total_items == 0:
+            self.crafting_items[9] = None
+            return
+            
+        is_plank = (total_items == 1 and log_count == 1)
 
-        # Recipe for Pickaxe
-        # Top: 3 pebbles, Middle: 1 vine, Bottom: 1 stick (centered)
-        is_pickaxe = (
-            check_slot(0, 'pebble') and check_slot(1, 'pebble') and check_slot(2, 'pebble') and
-            check_slot(3, None) and check_slot(4, 'vine') and check_slot(5, None) and
-            check_slot(6, None) and check_slot(7, 'stick') and check_slot(8, None)
-        )
+        rows = [r for r in range(3) if any(grid_ids[r])]
+        cols = [c for c in range(3) if any(grid_ids[r][c] for r in range(3))]
         
-        # Recipe for Axe (Minecraft layout, handles both left and right orientations)
-        is_axe_left = (
-            check_slot(0, 'pebble') and check_slot(1, 'pebble') and check_slot(2, None) and
-            check_slot(3, 'pebble') and check_slot(4, 'vine') and check_slot(5, None) and
-            check_slot(6, None) and check_slot(7, 'stick') and check_slot(8, None)
-        )
+        min_r, max_r = min(rows), max(rows)
+        min_c, max_c = min(cols), max(cols)
         
-        is_axe_right = (
-            check_slot(0, None) and check_slot(1, 'pebble') and check_slot(2, 'pebble') and
-            check_slot(3, None) and check_slot(4, 'vine') and check_slot(5, 'pebble') and
-            check_slot(6, None) and check_slot(7, 'stick') and check_slot(8, None)
-        )
+        extracted = []
+        for r in range(min_r, max_r + 1):
+            row_data = []
+            for c in range(min_c, max_c + 1):
+                row_data.append(grid_ids[r][c])
+            extracted.append(row_data)
 
-        if is_pickaxe:
+        # -----------------
+        # RECIPE PATTERNS
+        # -----------------
+        pickaxe_pattern = [
+            ['pebble', 'pebble', 'pebble'],
+            [None, 'vine', None],
+            [None, 'stick', None]
+        ]
+        
+        axe_left = [
+            ['pebble', 'pebble'],
+            ['pebble', 'vine'],
+            [None, 'stick']
+        ]
+        
+        axe_right = [
+            ['pebble', 'pebble'],
+            ['vine', 'pebble'],
+            ['stick', None]
+        ]
+
+        def match(pattern):
+            if len(extracted) != len(pattern): return False
+            if len(extracted[0]) != len(pattern[0]): return False
+            for r in range(len(extracted)):
+                for c in range(len(extracted[0])):
+                    if extracted[r][c] != pattern[r][c]:
+                        return False
+            return True
+
+        if is_plank:
+            self.crafting_items[9] = {
+                'id': 'plank',
+                'type': 'normal',
+                'sprite': self.assets['plank'],
+                'count': 4
+            }
+        elif match(pickaxe_pattern):
             self.crafting_items[9] = {
                 'id': 'basicpickaxe',
                 'type': 'tool',
                 'sprite': self.assets['basicpickaxe'],
                 'count': 1
             }
-        elif is_axe_left or is_axe_right:
+        elif match(axe_left) or match(axe_right):
             self.crafting_items[9] = {
                 'id': 'basicaxe',
                 'type': 'tool',
@@ -1609,6 +1655,18 @@ def load_assets():
         assets['vine'] = pygame.transform.scale(create_fallback_vine_png(), (ITEM_BASE_SIZE, ITEM_BASE_SIZE))
 
     try:
+        log_img = pygame.image.load(os.path.join(asset_dir, "log.png")).convert_alpha()
+        assets['log'] = pygame.transform.scale(log_img, (ITEM_BASE_SIZE, ITEM_BASE_SIZE))
+    except pygame.error:
+        assets['log'] = pygame.transform.scale(create_fallback_log_png(), (ITEM_BASE_SIZE, ITEM_BASE_SIZE))
+
+    try:
+        plank_img = pygame.image.load(os.path.join(asset_dir, "plank.png")).convert_alpha()
+        assets['plank'] = pygame.transform.scale(plank_img, (ITEM_BASE_SIZE, ITEM_BASE_SIZE))
+    except pygame.error:
+        assets['plank'] = pygame.transform.scale(create_fallback_plank_png(), (ITEM_BASE_SIZE, ITEM_BASE_SIZE))
+
+    try:
         boulder_img = pygame.image.load(os.path.join(asset_dir, "boulder.png")).convert_alpha()
         assets['boulder'] = boulder_img
     except pygame.error:
@@ -1637,12 +1695,6 @@ def load_assets():
         assets['tree'] = tree_img
     except pygame.error:
         assets['tree'] = create_fallback_tree_png()
-
-    try:
-        log_img = pygame.image.load(os.path.join(asset_dir, "log.png")).convert_alpha()
-        assets['log'] = pygame.transform.scale(log_img, (ITEM_BASE_SIZE, ITEM_BASE_SIZE))
-    except pygame.error:
-        assets['log'] = pygame.transform.scale(create_fallback_log_png(), (ITEM_BASE_SIZE, ITEM_BASE_SIZE))
 
     return assets
 
