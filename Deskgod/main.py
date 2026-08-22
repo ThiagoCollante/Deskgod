@@ -23,9 +23,12 @@ CURSOR_GRABBING_Y_OFFSET = 25     # Downward visual shift to cover the human whi
 # Interaction Thresholds
 DRAG_HOLD_DELAY_MS = 150          # Milliseconds required to hold before grabbing vs tapping
 DRAG_DROP_THRESHOLD = 5           # Pixels of movement allowed to still count as a "click"
+HOVER_TOOLTIP_DELAY_MS = 1000     # Milliseconds required to hover before showing description
 
 # UI / Menu Settings
 BACKPACK_SCALE = 0.7              # Multiplier to scale the backpack while preserving proportions
+GRID_CELL_WIDTH = 40              # Width of a single grid placement cell
+GRID_CELL_PADDING = 1             # Gap between grid cells
 RADIAL_MENU_RADIUS = 75
 INV_COLS = 4
 INV_ROWS = 4
@@ -64,6 +67,15 @@ BOULDER_HEIGHT_MIN = 80           # Boulders will always be bigger than the 50px
 BOULDER_HEIGHT_MAX = 150
 TREE_HEIGHT_MIN = 120
 TREE_HEIGHT_MAX = 200
+
+# Building Recipes & Descriptions
+BUILDING_RECIPES = {
+    "smallhut": {"stick": 8, "vine": 6}
+}
+
+BUILDING_DESCRIPTIONS = {
+    "smallhut": "Home."
+}
 
 # ==========================================
 # --- CORE LOGIC ---
@@ -244,6 +256,28 @@ def create_fallback_movedot_png():
     pygame.draw.circle(surf, (255, 255, 255, 255), (4, 4), 2)
     return surf
 
+def create_fallback_buildingslot_png():
+    visual_size = GRID_CELL_WIDTH - GRID_CELL_PADDING
+    surf = pygame.Surface((visual_size, visual_size), pygame.SRCALPHA)
+    pygame.draw.rect(surf, (0, 255, 0, 100), surf.get_rect())
+    pygame.draw.rect(surf, (0, 200, 0, 255), surf.get_rect(), 2)
+    return surf
+
+def create_fallback_basictreesappling_png():
+    surf = pygame.Surface((ITEM_BASE_SIZE, ITEM_BASE_SIZE), pygame.SRCALPHA)
+    cx = ITEM_BASE_SIZE // 2
+    pygame.draw.line(surf, (101, 67, 33), (cx, ITEM_BASE_SIZE - 4), (cx, ITEM_BASE_SIZE // 2), 3)
+    pygame.draw.circle(surf, (34, 139, 34), (cx - 5, ITEM_BASE_SIZE // 2 - 2), 5)
+    pygame.draw.circle(surf, (50, 205, 50), (cx + 5, ITEM_BASE_SIZE // 2 - 4), 5)
+    return surf
+
+def create_fallback_smallhut_png():
+    target_width = int((GRID_CELL_WIDTH * 3) * 1.1)
+    surf = pygame.Surface((target_width, 150), pygame.SRCALPHA)
+    pygame.draw.rect(surf, (139, 69, 19), (10, 60, target_width - 20, 90)) # Walls
+    pygame.draw.polygon(surf, (165, 42, 42), [(0, 60), (target_width // 2, 0), (target_width, 60)]) # Roof
+    return surf
+
 # --- Custom Cursor Class ---
 class CustomCursor:
     def __init__(self, assets):
@@ -392,6 +426,101 @@ class Tree:
 
     def draw(self, surface):
         surface.blit(self.image, self.rect)
+
+class Building:
+    def __init__(self, name, sprite, x, y, cells_taken):
+        self.name = name
+        self.image = sprite
+        self.x = x
+        self.y = y
+        self.cells_taken = cells_taken
+        self.rect = self.image.get_rect(midbottom=(self.x, self.y))
+        
+        self.state = "blueprint"
+        self.recipe = BUILDING_RECIPES.get(self.name, {}).copy()
+        self.contributed = {k: 0 for k in self.recipe}
+        self.total_required = sum(self.recipe.values())
+        self.total_contributed = 0
+        
+        self.blueprint_image = self.image.copy()
+        self.blueprint_image.fill((100, 180, 255, 255), special_flags=pygame.BLEND_RGBA_MULT)
+        self.blueprint_image.fill((0, 50, 100, 0), special_flags=pygame.BLEND_RGB_ADD)
+        self.blueprint_image.set_alpha(160)
+
+    def update(self, current_floor):
+        self.y = current_floor
+        self.rect.midbottom = (self.x, self.y)
+
+    def add_item(self, item_name):
+        if self.contributed.get(item_name, 0) < self.recipe.get(item_name, 0):
+            self.contributed[item_name] += 1
+            self.total_contributed += 1
+            if self.total_contributed >= self.total_required:
+                self.state = "built"
+            return True
+        return False
+
+    def draw(self, surface, item_font, assets):
+        if self.state == "built":
+            surface.blit(self.image, self.rect)
+            return
+
+        # It's a blueprint
+        slot_sprite = assets['buildingslot']
+        start_grid_idx = (self.x - (GRID_CELL_WIDTH * self.cells_taken) // 2) // GRID_CELL_WIDTH
+        
+        # Draw underlying slots for blueprint
+        for i in range(self.cells_taken):
+            center_x = (start_grid_idx + i) * GRID_CELL_WIDTH + (GRID_CELL_WIDTH // 2)
+            rect = slot_sprite.get_rect(midbottom=(center_x, self.y))
+            surface.blit(slot_sprite, rect)
+
+        # Draw partial real and partial ghost from bottom to top
+        completion_pct = self.total_contributed / max(1, self.total_required)
+        h = self.rect.height
+        w = self.rect.width
+        
+        real_h = int(h * completion_pct)
+        ghost_h = h - real_h
+        
+        # Draw Ghost (Top part)
+        if ghost_h > 0:
+            ghost_crop = pygame.Rect(0, 0, w, ghost_h)
+            ghost_part = self.blueprint_image.subsurface(ghost_crop)
+            surface.blit(ghost_part, (self.rect.x, self.rect.y))
+            
+        # Draw Real (Bottom part)
+        if real_h > 0:
+            real_crop = pygame.Rect(0, ghost_h, w, real_h)
+            real_part = self.image.subsurface(real_crop)
+            surface.blit(real_part, (self.rect.x, self.rect.y + ghost_h))
+        
+        # Draw recipe UI inside the blueprint
+        y_offset = self.rect.top + 30 
+        for item_name, req in self.recipe.items():
+            curr = self.contributed[item_name]
+            text_str = f"{curr}/{req}"
+            color = (0, 255, 0) if curr >= req else (255, 255, 255)
+            text_surf = item_font.render(text_str, True, color)
+            
+            icon = assets.get(item_name)
+            icon_w = icon.get_width() if icon else 0
+            
+            total_w = icon_w + 5 + text_surf.get_width()
+            start_x = self.rect.centerx - total_w // 2
+            
+            if icon:
+                surface.blit(icon, (start_x, y_offset - icon.get_height() // 2))
+            
+            text_rect = text_surf.get_rect(left=start_x + icon_w + 5, centery=y_offset)
+            
+            # Outline
+            for ox, oy in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+                outline = item_font.render(text_str, True, (0,0,0))
+                surface.blit(outline, text_rect.move(ox, oy))
+            surface.blit(text_surf, text_rect)
+            
+            y_offset += 25
 
 # --- Dropped Item Physics Class ---
 class DroppedItem:
@@ -701,7 +830,6 @@ class InventoryMenu:
             self.crafting_items[9] = None
 
     def consume_recipe(self):
-        # Automatically consumes exactly 1 unit of everything in the grid
         for i in range(9):
             if self.crafting_items[i]:
                 self.crafting_items[i]['count'] -= 1
@@ -722,10 +850,8 @@ class InventoryMenu:
             self.active_npc.menu_open = False
             self.active_npc = None
             
-        # Prevent output item logic from throwing raw preview items, safely clear it
         self.crafting_items[9] = None
         
-        # If any items are left in the crafting grid, pop them to the floor
         for i in range(9):
             if self.crafting_items[i] is not None:
                 drops.append(self.crafting_items[i])
@@ -745,7 +871,6 @@ class InventoryMenu:
         mx, my = mouse_pos
         
         if self.mode == "crafting":
-            # Check output slot FIRST so it's clickable on top of overlaps
             absolute_out_rect = self.crafting_out_slot_rect.move(self.crafting_out_rect.x, self.crafting_out_rect.y)
             if absolute_out_rect.collidepoint(mx, my):
                 return self.num_base_slots + 9
@@ -818,11 +943,9 @@ class InventoryMenu:
                 self.draw_item(surface, item, absolute_rect.center, item_font)
 
         if self.mode == "crafting":
-            # Draw back panels
             surface.blit(self.crafting_out_bg, self.crafting_out_rect.topleft)
             surface.blit(self.crafting_bg, self.crafting_rect.topleft)
             
-            # Draw 3x3 slots
             for idx, slot_rect in enumerate(self.crafting_slot_rects):
                 absolute_rect = slot_rect.move(self.crafting_rect.x, self.crafting_rect.y)
                 is_hovered = absolute_rect.collidepoint((mx, my))
@@ -838,7 +961,6 @@ class InventoryMenu:
                 if item:
                     self.draw_item(surface, item, absolute_rect.center, item_font)
 
-            # Draw Output Slot completely last to ensure visual overlap priority
             absolute_out_rect = self.crafting_out_slot_rect.move(self.crafting_out_rect.x, self.crafting_out_rect.y)
             is_out_hovered = absolute_out_rect.collidepoint((mx, my))
             out_slot_surf = pygame.transform.scale(self.slot_sprite, (absolute_out_rect.width, absolute_out_rect.height))
@@ -1080,6 +1202,7 @@ class Person:
         self.target_x = None
         self.target_boulder = None
         self.target_tree = None
+        self.target_building = None
         
         self.mining_yield = 0
         self.mining_duration = 0
@@ -1090,6 +1213,8 @@ class Person:
         self.chopping_timer = 0
         self.chopping_loot = []
         self.chopping_ghost_ticks = []
+        
+        self.build_timer = 0
         
         self.inventory = [None] * num_slots
 
@@ -1158,6 +1283,23 @@ class Person:
             self.rect.midbottom = (self.x, self.y)
             return
             
+        if self.state == "moving_to_build" and self.target_building is not None:
+            dx = self.target_x - self.x
+            if abs(dx) <= self.walk_speed + 40:
+                self.state = "building"
+                self.vx = 0
+                self.angle = 0
+                self.facing_left = dx < 0
+                self.build_timer = 0
+            else:
+                self.vx = self.walk_speed if dx > 0 else -self.walk_speed
+                self.x += self.vx
+                self.facing_left = self.vx < 0
+                self.anim_tick += 1
+                self.angle = math.sin(self.anim_tick * 0.16) * 10
+            self.rect.midbottom = (self.x, self.y)
+            return
+            
         if self.state == "moving_to_mine" and self.target_boulder is not None:
             dx = self.target_x - self.x
             if abs(dx) <= self.walk_speed + 40:
@@ -1186,7 +1328,8 @@ class Person:
                 logs = ['log'] * random.randint(2, 5)
                 sticks = ['stick'] * random.randint(3, 7)
                 vines = ['vine'] * random.randint(0, 3)
-                self.chopping_loot = logs + sticks + vines
+                saplings = ['basictreesappling'] * random.randint(1, 2)
+                self.chopping_loot = logs + sticks + vines + saplings
                 random.shuffle(self.chopping_loot)
                 
                 self.chopping_duration = len(self.chopping_loot) * 30 
@@ -1199,6 +1342,42 @@ class Person:
                 self.anim_tick += 1
                 self.angle = math.sin(self.anim_tick * 0.16) * 10
             self.rect.midbottom = (self.x, self.y)
+            return
+
+        if self.state == "building" and self.target_building is not None:
+            if self.target_building.state == "built":
+                self.state = "idle"
+                self.target_building = None
+                self.target_x = None
+                self.state_timer = 60
+                return
+                
+            self.build_timer += 1
+            self.anim_tick += 1
+            self.angle = math.sin(self.anim_tick * 0.3) * 15
+            
+            if self.build_timer >= 30: # Deposit 1 item every 0.5s
+                self.build_timer = 0
+                item_deposited = False
+                
+                for req_item, req_count in self.target_building.recipe.items():
+                    if self.target_building.contributed[req_item] < req_count:
+                        for idx, inv_item in enumerate(self.inventory):
+                            if inventory_menu.get_slot_type(idx) == "normal" and inv_item and inv_item['id'] == req_item:
+                                inv_item['count'] -= 1
+                                if inv_item['count'] <= 0:
+                                    self.inventory[idx] = None
+                                self.target_building.add_item(req_item)
+                                item_deposited = True
+                                break
+                    if item_deposited:
+                        break
+                        
+                if not item_deposited:
+                    self.state = "idle"
+                    self.target_building = None
+                    self.target_x = None
+                    self.state_timer = 60
             return
 
         if self.state == "mining" and self.target_boulder is not None:
@@ -1695,6 +1874,28 @@ def load_assets():
         assets['tree'] = tree_img
     except pygame.error:
         assets['tree'] = create_fallback_tree_png()
+        
+    try:
+        sap_img = pygame.image.load(os.path.join(asset_dir, "basictreesappling.png")).convert_alpha()
+        assets['basictreesappling'] = pygame.transform.scale(sap_img, (ITEM_BASE_SIZE, ITEM_BASE_SIZE))
+    except pygame.error:
+        assets['basictreesappling'] = create_fallback_basictreesappling_png()
+
+    try:
+        bslot_img = pygame.image.load(os.path.join(asset_dir, "buildingslot.png")).convert_alpha()
+        visual_size = GRID_CELL_WIDTH - GRID_CELL_PADDING
+        assets['buildingslot'] = pygame.transform.scale(bslot_img, (visual_size, visual_size))
+    except pygame.error:
+        assets['buildingslot'] = create_fallback_buildingslot_png()
+        
+    try:
+        hut_img = pygame.image.load(os.path.join(asset_dir, "smallhut.png")).convert_alpha()
+        target_width = int((GRID_CELL_WIDTH * 3) * 1.1) 
+        ratio = target_width / hut_img.get_width()
+        new_h = int(hut_img.get_height() * ratio)
+        assets['smallhut'] = pygame.transform.scale(hut_img, (target_width, new_h))
+    except pygame.error:
+        assets['smallhut'] = create_fallback_smallhut_png()
 
     return assets
 
@@ -1746,6 +1947,14 @@ def main():
     
     # --- Move Command State ---
     pending_move_command = None
+    
+    # --- Build Command State ---
+    pending_build_command = None
+    buildings = []
+
+    # --- Tooltip Hover State ---
+    hovered_blueprint = None
+    hover_start_time = 0
 
     # --- Item Dragging State ---
     dragging_item = None
@@ -1854,7 +2063,6 @@ def main():
                     if not inv_drag_active:
                         dist = math.hypot(actual_mouse_pos[0] - inv_drag_start_pos[0], actual_mouse_pos[1] - inv_drag_start_pos[1])
                         if dist > DRAG_DROP_THRESHOLD:
-                            # Safely prevent wiggles outside the inventory from breaking the item click
                             if inventory_menu.active_npc and inventory_menu.get_hovered_slot_index(actual_mouse_pos) is not None:
                                 inv_drag_active = True
                             
@@ -1931,6 +2139,7 @@ def main():
                     dragging_npc.target_x = None 
                     dragging_npc.target_boulder = None
                     dragging_npc.target_tree = None
+                    dragging_npc.target_building = None
                     dragging_npc = None
                     
                 # --- ITEM DROPPING LOGIC ---
@@ -1950,7 +2159,6 @@ def main():
                                 break
 
                     if not inv_drag_active: 
-                        # Single Click execution
                         if slot_idx is not None:
                             can_place = inventory_menu.can_place_item(slot_idx, dragging_item)
                             if can_place:
@@ -2010,7 +2218,6 @@ def main():
                             handle_inventory_close(inventory_menu, dropped_items, actual_mouse_pos[0], actual_mouse_pos[1])
                             
                         else:
-                            # Drop entirely to floor
                             drop_x, drop_y = actual_mouse_pos
                             if inv_drag_button == 1 and dragging_item['count'] > 0:
                                 dropped_items.append(DroppedItem(dragging_item['id'], dragging_item['type'], dragging_item['sprite'], dragging_item['count'], drop_x, drop_y))
@@ -2020,7 +2227,6 @@ def main():
                                 dragging_item['count'] -= 1
 
                     else:
-                        # Drag was active. If released outside, perfectly drop the remainder to floor.
                         if slot_idx is None and not clicked_npc:
                             drop_x, drop_y = actual_mouse_pos
                             if dragging_item['count'] > 0:
@@ -2045,16 +2251,24 @@ def main():
                 if pending_move_command:
                     if event.button == 1:
                         clicked_boulder = None
+                        clicked_tree = None
+                        clicked_building = None
+                        
                         for b in boulders:
                             if b.rect.collidepoint(actual_mouse_pos):
                                 clicked_boulder = b
                                 break
                                 
-                        clicked_tree = None
                         if not clicked_boulder:
                             for t in trees:
                                 if t.rect.collidepoint(actual_mouse_pos):
                                     clicked_tree = t
+                                    break
+                                    
+                        if not clicked_boulder and not clicked_tree:
+                            for b in buildings:
+                                if b.state == "blueprint" and b.rect.collidepoint(actual_mouse_pos):
+                                    clicked_building = b
                                     break
                         
                         if clicked_boulder:
@@ -2090,6 +2304,12 @@ def main():
                             else:
                                 pending_move_command.target_x = clicked_tree.x
                                 pending_move_command.state = "moving_to_target"
+                        
+                        elif clicked_building:
+                            pending_move_command.target_building = clicked_building
+                            pending_move_command.target_x = clicked_building.x
+                            pending_move_command.state = "moving_to_build"
+                            
                         else:
                             target_x = max(30, min(screen_w - 30, actual_mouse_pos[0]))
                             pending_move_command.target_x = target_x
@@ -2100,6 +2320,39 @@ def main():
                         pending_move_command = None
                     continue
                 
+                # --- BUILDING PLACEMENT LOGIC ---
+                if pending_build_command:
+                    clicked_ghost = None
+                    for b in buildings:
+                        if b.state == "blueprint" and b.rect.collidepoint(actual_mouse_pos):
+                            clicked_ghost = b
+                            break
+                            
+                    if event.button == 1:
+                        if clicked_ghost:
+                            buildings.remove(clicked_ghost)
+                            for item_name, count in clicked_ghost.contributed.items():
+                                if count > 0:
+                                    dropped_items.append(DroppedItem(item_name, "normal", assets[item_name], count, clicked_ghost.x, clicked_ghost.y))
+                        else:
+                            cells_taken = 3
+                            mouse_grid_idx = actual_mouse_pos[0] // GRID_CELL_WIDTH
+                            start_grid_idx = mouse_grid_idx - (cells_taken // 2)
+                            
+                            snap_x = start_grid_idx * GRID_CELL_WIDTH + (GRID_CELL_WIDTH * cells_taken) // 2
+                            
+                            buildings.append(Building(pending_build_command, assets[pending_build_command], snap_x, current_floor, cells_taken))
+                            pending_build_command = None
+                    elif event.button == 3:
+                        if clicked_ghost:
+                            buildings.remove(clicked_ghost)
+                            for item_name, count in clicked_ghost.contributed.items():
+                                if count > 0:
+                                    dropped_items.append(DroppedItem(item_name, "normal", assets[item_name], count, clicked_ghost.x, clicked_ghost.y))
+                        else:
+                            pending_build_command = None
+                    continue
+
                 # --- IF WE ARE ALREADY HOLDING AN ITEM ---
                 if dragging_item:
                     inv_drag_button = event.button
@@ -2140,7 +2393,7 @@ def main():
                                     item['count'] -= half
                                     if item['count'] == 0:
                                         inventory_menu.set_item(slot_idx, None)
-                            continue 
+                        continue 
                     elif inventory_menu.is_hovering(actual_mouse_pos):
                         continue 
                     elif event.button == 1:
@@ -2167,6 +2420,9 @@ def main():
                             npc = radial_menu.active_npc
                             radial_menu.close()
                             handle_inventory_open(inventory_menu, npc, "crafting", dropped_items, actual_mouse_pos[0], actual_mouse_pos[1])
+                        elif action == "buildings":
+                            pending_build_command = "smallhut"
+                            radial_menu.close()
                         else:
                             print(f"Clicked {action} - Feature not yet implemented!")
                         continue
@@ -2224,6 +2480,7 @@ def main():
                 dragging_npc.target_x = None  
                 dragging_npc.target_boulder = None
                 dragging_npc.target_tree = None
+                dragging_npc.target_building = None
                 dragging_npc.state = "idle"
                 potential_drag_npc = None
 
@@ -2236,6 +2493,18 @@ def main():
             dragging_npc.x = current_cursor_pos[0] + drag_offset_x
             dragging_npc.y = current_cursor_pos[1] + drag_offset_y
             dragging_npc.rect.midbottom = (dragging_npc.x, dragging_npc.y)
+
+        # Update Hover Tooltip
+        currently_hovered = None
+        if not game_paused and not is_grabbing_human and not is_grabbing_item:
+            for b in buildings:
+                if b.state == "blueprint" and b.rect.collidepoint(actual_mouse_pos):
+                    currently_hovered = b
+                    break
+        
+        if currently_hovered != hovered_blueprint:
+            hovered_blueprint = currently_hovered
+            hover_start_time = pygame.time.get_ticks()
 
         if not game_paused:
             if inventory_menu.active_npc and inventory_menu.mode == "crafting":
@@ -2276,6 +2545,9 @@ def main():
                 
             for tree in trees:
                 tree.update(current_floor)
+                
+            for building in buildings:
+                building.update(current_floor)
 
             for cloud in clouds:
                 cloud.update(clouds, current_weather)
@@ -2316,11 +2588,35 @@ def main():
 
         screen.fill(TRANSPARENT_KEY)
         
-        # Draw background objects (like boulders) first so they sit behind humans
+        # Draw background objects
         for tree in trees:
             tree.draw(screen)
         for boulder in boulders:
             boulder.draw(screen)
+        for building in buildings:
+            building.draw(screen, item_font, assets)
+            
+        # --- DRAW GHOST PREVIEW WHILE DECIDING WHERE TO PLACE ---
+        if pending_build_command:
+            cells_taken = 3
+            mouse_grid_idx = actual_mouse_pos[0] // GRID_CELL_WIDTH
+            start_grid_idx = mouse_grid_idx - (cells_taken // 2)
+            
+            slot_sprite = assets['buildingslot']
+            
+            for i in range(cells_taken):
+                center_x = (start_grid_idx + i) * GRID_CELL_WIDTH + (GRID_CELL_WIDTH // 2)
+                rect = slot_sprite.get_rect(midbottom=(center_x, current_floor))
+                screen.blit(slot_sprite, rect)
+
+            ghost_sprite = assets[pending_build_command].copy()
+            ghost_sprite.fill((100, 180, 255, 255), special_flags=pygame.BLEND_RGBA_MULT)
+            ghost_sprite.fill((0, 50, 100, 0), special_flags=pygame.BLEND_RGB_ADD)
+            ghost_sprite.set_alpha(160)
+            
+            snap_x = start_grid_idx * GRID_CELL_WIDTH + (GRID_CELL_WIDTH * cells_taken) // 2
+            ghost_rect = ghost_sprite.get_rect(midbottom=(snap_x, current_floor))
+            screen.blit(ghost_sprite, ghost_rect)
 
         for drop in raindrops:
             drop.draw(screen)
@@ -2333,7 +2629,7 @@ def main():
             d_item.draw(screen, item_font)
             
         for char in characters:
-            if char.target_x is not None and char.state not in ["mining", "chopping"]:
+            if char.target_x is not None and char.state not in ["mining", "chopping", "building"]:
                 move_icon = assets['move']
                 float_y = char.y - (CHARACTER_TARGET_HEIGHT // 2) + math.sin(pygame.time.get_ticks() * 0.005) * 5
                 icon_rect = move_icon.get_rect(center=(char.target_x, float_y))
@@ -2365,6 +2661,31 @@ def main():
         if game_paused:
             pause_menu.draw(screen, actual_mouse_pos)
             
+        # --- DRAW HOVER TOOLTIP ---
+        if hovered_blueprint and (pygame.time.get_ticks() - hover_start_time >= HOVER_TOOLTIP_DELAY_MS):
+            desc_text = BUILDING_DESCRIPTIONS.get(hovered_blueprint.name, "")
+            if desc_text:
+                tip_surf = debug_font.render(desc_text, True, (255, 255, 255))
+                tip_rect = tip_surf.get_rect()
+                
+                box_rect = tip_rect.inflate(16, 10)
+                box_rect.midtop = (actual_mouse_pos[0], actual_mouse_pos[1] + 25)
+                
+                if box_rect.right > screen_w - 10:
+                    box_rect.right = screen_w - 10
+                if box_rect.left < 10:
+                    box_rect.left = 10
+                if box_rect.bottom > screen_h - 10:
+                    box_rect.bottom = actual_mouse_pos[1] - 10
+                    
+                tip_rect.center = box_rect.center
+                
+                bg_surf = pygame.Surface(box_rect.size, pygame.SRCALPHA)
+                bg_surf.fill((20, 25, 35, 220))
+                pygame.draw.rect(bg_surf, (100, 180, 255, 255), bg_surf.get_rect(), 1, border_radius=4)
+                screen.blit(bg_surf, box_rect.topleft)
+                screen.blit(tip_surf, tip_rect)
+
         if debug_mode:
             debug_info = [
                 f"=== DEBUG MODE ===",
